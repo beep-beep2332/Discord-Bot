@@ -1,43 +1,52 @@
 import asyncio
+import base64
+import hashlib
+import hmac
+import html
 import json
 import os
-import random
+import secrets
 import string
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Optional, Dict, Any
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, Optional
+from urllib.parse import urlencode
 
 import discord
 from aiohttp import ClientError, ClientSession, web
 from discord import app_commands
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
+from motor.motor_asyncio import AsyncIOMotorClient
 
 load_dotenv()
 
 # =========================
-# ENV / PUBLIC CONFIG
+# ENV CONFIG
 # =========================
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+MONGO_URI = os.getenv("MONGO_URI", "mongodb://127.0.0.1:27017/moealturej_bot").strip()
+MONGO_DB_NAME = os.getenv("MONGO_DB_NAME", "moealturej_bot").strip()
+
+DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID", "").strip()
+DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET", "").strip()
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://localhost:8080").rstrip("/")
+DASHBOARD_SECRET = os.getenv("DASHBOARD_SECRET", secrets.token_urlsafe(48)).strip()
+OWNER_USER_ID = int(os.getenv("OWNER_USER_ID", "1222903158125105194"))
+OWNER_CONTACT = os.getenv("OWNER_CONTACT", "Contact moealturej, the owner, to talk about using this bot for your server.").strip()
+
 DEFAULT_STORE_URL = os.getenv("DEFAULT_STORE_URL", "https://www.moealturej.com").strip()
 ROTATING_STATUSES = [
-    status.strip()
-    for status in os.getenv("ROTATING_STATUSES", "Watching /help,moealturej support,Watching tickets").split(",")
-    if status.strip()
+    s.strip() for s in os.getenv("ROTATING_STATUSES", "Watching /help,moealturej support,Watching tickets").split(",") if s.strip()
 ]
 WEB_HOST = os.getenv("WEB_HOST", "0.0.0.0").strip()
 WEB_PORT = int(os.getenv("PORT", os.getenv("WEB_PORT", "8080")))
 KEEP_ALIVE_URL = os.getenv("KEEP_ALIVE_URL", "").strip()
 
-# =========================
-# BASIC SETTINGS
-# =========================
-DATA_FILE = Path("bot_data.json")
 EMBED_COLOR = 0x7C3AED
 ERROR_COLOR = 0xEF4444
 SUCCESS_COLOR = 0x22C55E
+INFO_COLOR = 0x38BDF8
 STARTED_AT = datetime.now(timezone.utc)
-web_runner: Optional[web.AppRunner] = None
 
 TICKET_TYPES = {
     "general": {
@@ -60,202 +69,241 @@ TICKET_TYPES = {
     },
 }
 
+DEFAULT_GUILD_CONFIG: Dict[str, Any] = {
+    "enabled": False,
+    "verified_role": None,
+    "auto_role": None,
+    "bot_admin_role": None,
+    "welcome_channel": None,
+    "verification_channel": None,
+    "verification_log_channel": None,
+    "ticket_category": None,
+    "ticket_panel_channel": None,
+    "ticket_log_channel": None,
+    "ticket_role_general": None,
+    "ticket_role_hwid": None,
+    "ticket_role_key_not_received": None,
+    "store_url": DEFAULT_STORE_URL,
+    "announce_image": None,
+    "announce_footer": "moealturej",
+    "stats_category": None,
+    "stats_channels": {"members": None, "humans": None, "bots": None, "boosts": None},
+    "open_tickets": {},
+    "oauth_verify_join_enabled": True,
+}
+
 # =========================
-# INTENTS
+# DISCORD / DB BOOT
 # =========================
 intents = discord.Intents.default()
 intents.guilds = True
 intents.members = True
-intents.message_content = False
+intents.message_content = True  # Needed only to build ticket transcripts.
 
 bot = commands.Bot(command_prefix="!", intents=intents)
+web_runner: Optional[web.AppRunner] = None
+mongo_client: Optional[AsyncIOMotorClient] = None
+mdb = None
 
 
-@bot.event
-async def setup_hook():
-    await start_keep_alive_server()
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def now_iso() -> str:
+    return utcnow().isoformat()
+
+
+async def init_mongo() -> None:
+    global mongo_client, mdb
+    mongo_client = AsyncIOMotorClient(MONGO_URI, serverSelectionTimeoutMS=8000)
+    mdb = mongo_client[MONGO_DB_NAME]
+    await mdb.command("ping")
+    await mdb.guild_configs.create_index("guild_id", unique=True)
+    await mdb.oauth_states.create_index("expires_at", expireAfterSeconds=0)
+    await mdb.sessions.create_index("expires_at", expireAfterSeconds=0)
+    await mdb.ticket_events.create_index([("guild_id", 1), ("created_at", -1)])
+    await mdb.verification_events.create_index([("guild_id", 1), ("created_at", -1)])
+
+
+async def get_guild_config(guild_id: int) -> Dict[str, Any]:
+    existing = await mdb.guild_configs.find_one({"guild_id": int(guild_id)}, {"_id": 0})
+    if not existing:
+        doc = {"guild_id": int(guild_id), **DEFAULT_GUILD_CONFIG, "created_at": now_iso(), "updated_at": now_iso()}
+        await mdb.guild_configs.insert_one(doc)
+        return {k: v for k, v in doc.items() if k != "_id"}
+
+    update: Dict[str, Any] = {}
+    for key, value in DEFAULT_GUILD_CONFIG.items():
+        if key not in existing:
+            update[key] = value
+    for key, value in DEFAULT_GUILD_CONFIG["stats_channels"].items():
+        if key not in existing.get("stats_channels", {}):
+            update[f"stats_channels.{key}"] = value
+    if update:
+        update["updated_at"] = now_iso()
+        await mdb.guild_configs.update_one({"guild_id": int(guild_id)}, {"$set": update})
+        existing = await mdb.guild_configs.find_one({"guild_id": int(guild_id)}, {"_id": 0})
+    return existing
+
+
+async def set_config(guild_id: int, updates: Dict[str, Any]) -> None:
+    await get_guild_config(guild_id)
+    updates["updated_at"] = now_iso()
+    await mdb.guild_configs.update_one({"guild_id": int(guild_id)}, {"$set": updates}, upsert=True)
+
+
+async def add_open_ticket(guild_id: int, user_id: int, channel_id: int, ticket_type: str) -> None:
+    await set_config(guild_id, {f"open_tickets.{user_id}": {"channel_id": int(channel_id), "type": ticket_type, "opened_at": now_iso()}})
+
+
+async def remove_open_ticket(guild_id: int, user_id: int) -> None:
+    await mdb.guild_configs.update_one({"guild_id": int(guild_id)}, {"$unset": {f"open_tickets.{user_id}": ""}, "$set": {"updated_at": now_iso()}})
+
+
+async def save_event(collection: str, payload: Dict[str, Any]) -> None:
+    payload.setdefault("created_at", now_iso())
+    await mdb[collection].insert_one(payload)
 
 # =========================
-# LOCAL JSON DB
+# AUTH / ACCESS HELPERS
 # =========================
-def load_db() -> Dict[str, Any]:
-    if not DATA_FILE.exists():
-        return {"guilds": {}}
+def sign_value(value: str) -> str:
+    sig = hmac.new(DASHBOARD_SECRET.encode(), value.encode(), hashlib.sha256).hexdigest()
+    return f"{value}.{sig}"
+
+
+def unsign_value(signed: str) -> Optional[str]:
     try:
-        with DATA_FILE.open("r", encoding="utf-8") as f:
-            return json.load(f)
-    except json.JSONDecodeError:
-        return {"guilds": {}}
+        value, sig = signed.rsplit(".", 1)
+    except ValueError:
+        return None
+    expected = hmac.new(DASHBOARD_SECRET.encode(), value.encode(), hashlib.sha256).hexdigest()
+    return value if hmac.compare_digest(sig, expected) else None
 
 
-def save_db(data: Dict[str, Any]) -> None:
-    with DATA_FILE.open("w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4)
+def is_owner_user(user_id: int) -> bool:
+    return int(user_id) == OWNER_USER_ID
 
 
-def get_guild_config(guild_id: int) -> Dict[str, Any]:
-    data = load_db()
-    gid = str(guild_id)
-    if gid not in data["guilds"]:
-        data["guilds"][gid] = {
-            "verified_role": None,
-            "auto_role": None,
-            "bot_admin_role": None,
-            "welcome_channel": None,
-            "verification_channel": None,
-            "ticket_category": None,
-            "ticket_panel_channel": None,
-            "ticket_role_general": None,
-            "ticket_role_hwid": None,
-            "ticket_role_key_not_received": None,
-            "store_url": DEFAULT_STORE_URL,
-            "announce_image": None,
-            "announce_footer": "moealturej",
-            "stats_category": None,
-            "stats_channels": {
-                "members": None,
-                "humans": None,
-                "bots": None,
-                "boosts": None,
-            },
-            "open_tickets": {},
-        }
-        save_db(data)
+async def get_dashboard_user(request: web.Request) -> Optional[Dict[str, Any]]:
+    raw = request.cookies.get("moe_session")
+    if not raw:
+        return None
+    session_id = unsign_value(raw)
+    if not session_id:
+        return None
+    session = await mdb.sessions.find_one({"session_id": session_id, "expires_at": {"$gt": utcnow()}}, {"_id": 0})
+    return session
 
-    # Keep older bot_data.json files compatible when new settings are added.
-    defaults = {
-        "verified_role": None,
-        "auto_role": None,
-        "bot_admin_role": None,
-        "welcome_channel": None,
-        "verification_channel": None,
-        "ticket_category": None,
-        "ticket_panel_channel": None,
-        "ticket_role_general": None,
-        "ticket_role_hwid": None,
-        "ticket_role_key_not_received": None,
-        "store_url": DEFAULT_STORE_URL,
-        "announce_image": None,
-        "announce_footer": "moealturej",
-        "stats_category": None,
-        "stats_channels": {
-            "members": None,
-            "humans": None,
-            "bots": None,
-            "boosts": None,
-        },
-        "open_tickets": {},
+
+async def exchange_code(code: str, redirect_uri: str) -> Dict[str, Any]:
+    data = {
+        "client_id": DISCORD_CLIENT_ID,
+        "client_secret": DISCORD_CLIENT_SECRET,
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": redirect_uri,
     }
-    changed = False
-    for key, value in defaults.items():
-        if key not in data["guilds"][gid]:
-            data["guilds"][gid][key] = value
-            changed = True
-    for key, value in defaults["stats_channels"].items():
-        if key not in data["guilds"][gid].setdefault("stats_channels", {}):
-            data["guilds"][gid]["stats_channels"][key] = value
-            changed = True
-    if changed:
-        save_db(data)
-    return data["guilds"][gid]
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    async with ClientSession() as session:
+        async with session.post("https://discord.com/api/oauth2/token", data=data, headers=headers) as resp:
+            body = await resp.json(content_type=None)
+            if resp.status >= 400:
+                raise web.HTTPBadRequest(text=f"Discord OAuth failed: {body}")
+            return body
 
 
-def update_guild_config(guild_id: int, key: str, value: Any) -> None:
-    data = load_db()
-    gid = str(guild_id)
-    if gid not in data["guilds"]:
-        get_guild_config(guild_id)
-        data = load_db()
-    data["guilds"][gid][key] = value
-    save_db(data)
+async def discord_get(path: str, token: str) -> Any:
+    async with ClientSession() as session:
+        async with session.get(f"https://discord.com/api{path}", headers={"Authorization": f"Bearer {token}"}) as resp:
+            body = await resp.json(content_type=None)
+            if resp.status >= 400:
+                raise web.HTTPBadRequest(text=f"Discord API failed: {body}")
+            return body
 
 
-def set_nested(guild_id: int, section: str, key: str, value: Any) -> None:
-    data = load_db()
-    gid = str(guild_id)
-    if gid not in data["guilds"]:
-        get_guild_config(guild_id)
-        data = load_db()
-    data["guilds"][gid][section][key] = value
-    save_db(data)
+async def discord_put(path: str, token: str, payload: Dict[str, Any]) -> tuple[int, Any]:
+    async with ClientSession() as session:
+        async with session.put(f"https://discord.com/api{path}", headers={"Authorization": f"Bot {token}", "Content-Type": "application/json"}, json=payload) as resp:
+            try:
+                body = await resp.json(content_type=None)
+            except Exception:
+                body = await resp.text()
+            return resp.status, body
 
 
-def add_open_ticket(guild_id: int, user_id: int, channel_id: int) -> None:
-    data = load_db()
-    gid = str(guild_id)
-    uid = str(user_id)
-    if gid not in data["guilds"]:
-        get_guild_config(guild_id)
-        data = load_db()
-    data["guilds"][gid]["open_tickets"][uid] = channel_id
-    save_db(data)
+def guild_manageable(user_guild: Dict[str, Any]) -> bool:
+    permissions = int(user_guild.get("permissions", "0"))
+    manage_guild = bool(permissions & 0x20)
+    administrator = bool(permissions & 0x8)
+    return manage_guild or administrator or bool(user_guild.get("owner"))
 
 
-def remove_open_ticket(guild_id: int, user_id: int) -> None:
-    data = load_db()
-    gid = str(guild_id)
-    uid = str(user_id)
-    if gid in data["guilds"]:
-        data["guilds"][gid].get("open_tickets", {}).pop(uid, None)
-        save_db(data)
-
-# =========================
-# HELPERS
-# =========================
-def is_bot_admin(interaction: discord.Interaction) -> bool:
-    if not interaction.guild or not isinstance(interaction.user, discord.Member):
-        return False
-
-    if interaction.user.id == interaction.guild.owner_id:
+async def dashboard_can_access(user: Dict[str, Any], guild_id: int) -> bool:
+    if is_owner_user(int(user["user_id"])):
         return True
+    return False  # Private-use bot. Everyone except owner gets the contact page.
 
-    config = get_guild_config(interaction.guild.id)
+
+def member_is_command_admin(member: discord.Member, config: Dict[str, Any]) -> bool:
+    if is_owner_user(member.id):
+        return True
+    if member.id == member.guild.owner_id:
+        return True
     admin_role_id = config.get("bot_admin_role")
-    if admin_role_id and any(role.id == admin_role_id for role in interaction.user.roles):
+    if admin_role_id and any(role.id == int(admin_role_id) for role in member.roles):
         return True
+    return admin_role_id is None and member.guild_permissions.manage_guild
 
-    # Fallback so the owner can set the admin role without breaking older setups.
-    return admin_role_id is None and interaction.user.guild_permissions.manage_guild
+
+def owner_private_message() -> str:
+    return f"This bot is not for public use. {OWNER_CONTACT}"
 
 
 def admin_only():
     async def predicate(interaction: discord.Interaction) -> bool:
-        if not is_bot_admin(interaction):
-            await interaction.response.send_message("You need the configured bot admin role to use this command.", ephemeral=True)
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("This command only works in a server.", ephemeral=True)
+            return False
+        config = await get_guild_config(interaction.guild.id)
+        if not member_is_command_admin(interaction.user, config):
+            await interaction.response.send_message(owner_private_message(), ephemeral=True)
             return False
         return True
     return app_commands.check(predicate)
 
 
-def owner_only():
+def guild_enabled_or_owner():
     async def predicate(interaction: discord.Interaction) -> bool:
-        if not interaction.guild or interaction.user.id != interaction.guild.owner_id:
-            await interaction.response.send_message("Only the server owner can use this command.", ephemeral=True)
-            return False
-        return True
+        if not interaction.guild:
+            return True
+        if is_owner_user(interaction.user.id):
+            return True
+        config = await get_guild_config(interaction.guild.id)
+        if config.get("enabled"):
+            return True
+        await interaction.response.send_message(owner_private_message(), ephemeral=True)
+        return False
     return app_commands.check(predicate)
 
-
+# =========================
+# UI HELPERS
+# =========================
 def make_embed(title: str, description: str, color: int = EMBED_COLOR) -> discord.Embed:
-    embed = discord.Embed(
-        title=title,
-        description=description,
-        color=color,
-        timestamp=datetime.now(timezone.utc),
-    )
-    return embed
+    return discord.Embed(title=title, description=description, color=color, timestamp=utcnow())
 
 
 def clean_channel_name(text: str) -> str:
     allowed = string.ascii_lowercase + string.digits + "-"
     text = text.lower().replace(" ", "-")
-    return "".join(c for c in text if c in allowed)[:80]
+    return "".join(c for c in text if c in allowed)[:80] or "ticket"
 
 
 async def safe_add_role(member: discord.Member, role_id: Optional[int], reason: str) -> bool:
     if not role_id:
         return False
-    role = member.guild.get_role(role_id)
+    role = member.guild.get_role(int(role_id))
     if not role:
         return False
     try:
@@ -267,11 +315,8 @@ async def safe_add_role(member: discord.Member, role_id: Optional[int], reason: 
 
 async def send_verified_dm(member: discord.Member, store_url: str) -> None:
     embed = make_embed(
-        "Welcome to moealturej",
-        (
-            f"You are now verified in **{member.guild.name}**.\n\n"
-            "You can now access the server, check updates, and open a support ticket if you need help."
-        ),
+        "Verified successfully",
+        f"You are now verified in **{member.guild.name}**. You can access the server and open a ticket anytime you need help.",
         SUCCESS_COLOR,
     )
     embed.add_field(name="Store", value=store_url, inline=False)
@@ -282,123 +327,85 @@ async def send_verified_dm(member: discord.Member, store_url: str) -> None:
     except discord.Forbidden:
         pass
 
+
+async def log_verification(guild: discord.Guild, user: discord.abc.User, method: str, status: str, details: str = "") -> None:
+    config = await get_guild_config(guild.id)
+    await save_event("verification_events", {
+        "guild_id": guild.id,
+        "user_id": user.id,
+        "username": str(user),
+        "method": method,
+        "status": status,
+        "details": details,
+    })
+    channel = guild.get_channel(config.get("verification_log_channel") or 0)
+    if isinstance(channel, discord.TextChannel):
+        embed = make_embed("Verification Log", f"**User:** {user.mention if hasattr(user, 'mention') else user}\n**Method:** {method}\n**Status:** {status}\n{details}", SUCCESS_COLOR if status == "success" else ERROR_COLOR)
+        await channel.send(embed=embed)
+
+
+async def build_ticket_transcript(channel: discord.TextChannel) -> tuple[str, bytes]:
+    lines = [
+        "<!doctype html><html><head><meta charset='utf-8'>",
+        "<style>body{font-family:Arial;background:#0b0b10;color:#fff;padding:24px}.msg{border-bottom:1px solid #292938;padding:12px 0}.meta{color:#a8a8b8;font-size:13px}.content{white-space:pre-wrap;margin-top:6px}.att a{color:#c4b5fd}</style>",
+        f"<title>Transcript #{html.escape(channel.name)}</title></head><body>",
+        f"<h1>Transcript: #{html.escape(channel.name)}</h1>",
+    ]
+    async for msg in channel.history(limit=None, oldest_first=True):
+        author = html.escape(str(msg.author))
+        content = html.escape(msg.content or "")
+        created = msg.created_at.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        lines.append("<div class='msg'>")
+        lines.append(f"<div class='meta'><strong>{author}</strong> • {created}</div>")
+        if content:
+            lines.append(f"<div class='content'>{content}</div>")
+        if msg.embeds:
+            for emb in msg.embeds:
+                title = html.escape(emb.title or "Embed")
+                desc = html.escape(emb.description or "")
+                lines.append(f"<div class='content'>[Embed] <strong>{title}</strong><br>{desc}</div>")
+        if msg.attachments:
+            links = " ".join(f"<a href='{html.escape(a.url)}'>{html.escape(a.filename)}</a>" for a in msg.attachments)
+            lines.append(f"<div class='att'>Attachments: {links}</div>")
+        lines.append("</div>")
+    lines.append("</body></html>")
+    filename = f"transcript-{channel.guild.id}-{channel.id}.html"
+    return filename, "\n".join(lines).encode("utf-8")
+
 # =========================
-# VERIFICATION CAPTCHA
+# VERIFICATION VIEWS
 # =========================
-class VerifyModal(discord.ui.Modal):
-    def __init__(self, code: str):
-        super().__init__(title="Verification Captcha")
-        self.code = code
-        self.answer = discord.ui.TextInput(
-            label=f"Copy this text exactly: {code}",
-            placeholder=code,
-            required=True,
-            min_length=len(code),
-            max_length=len(code),
-        )
-        self.add_item(self.answer)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        if not interaction.guild or not isinstance(interaction.user, discord.Member):
-            return await interaction.response.send_message("This only works inside a server.", ephemeral=True)
-
-        if str(self.answer.value).strip() != self.code:
-            return await interaction.response.send_message("Captcha failed. Press verify and try again.", ephemeral=True)
-
-        config = get_guild_config(interaction.guild.id)
-        ok = await safe_add_role(interaction.user, config.get("verified_role"), "User passed verification captcha")
-        if not ok:
-            return await interaction.response.send_message(
-                "Captcha passed, but I could not give the verified role. Ask an admin to check my role position and setup.",
-                ephemeral=True,
-            )
-
-        await send_verified_dm(interaction.user, config.get("store_url", DEFAULT_STORE_URL))
-        await interaction.response.send_message("Verified successfully. You now have access. I also sent you a welcome DM.", ephemeral=True)
-
-
-class VerifyView(discord.ui.View):
-    def __init__(self):
+class OAuthVerifyView(discord.ui.View):
+    def __init__(self, guild_id: int):
         super().__init__(timeout=None)
-
-    @discord.ui.button(label="Verify", style=discord.ButtonStyle.success, emoji="✅", custom_id="moe_verify_button")
-    async def verify_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        code = "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
-        await interaction.response.send_modal(VerifyModal(code))
-
-# =========================
-# TICKETS
-# =========================
-class CloseTicketView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="Close Ticket", style=discord.ButtonStyle.danger, emoji="🔒", custom_id="moe_close_ticket")
-    async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not interaction.guild or not isinstance(interaction.channel, discord.TextChannel):
-            return await interaction.response.send_message("This can only be used inside a ticket channel.", ephemeral=True)
-
-        topic = interaction.channel.topic or ""
-        owner_id = None
-        if "owner_id=" in topic:
-            try:
-                owner_id = int(topic.split("owner_id=")[1].split()[0])
-            except ValueError:
-                owner_id = None
-
-        if not interaction.user.guild_permissions.manage_channels:
-            config = get_guild_config(interaction.guild.id)
-            allowed = False
-            for ticket_info in TICKET_TYPES.values():
-                role_id = config.get(ticket_info["support_role_key"])
-                if role_id and any(role.id == role_id for role in getattr(interaction.user, "roles", [])):
-                    allowed = True
-            if owner_id == interaction.user.id:
-                allowed = True
-            if not allowed:
-                return await interaction.response.send_message("You do not have permission to close this ticket.", ephemeral=True)
-
-        await interaction.response.send_message("Closing ticket...", ephemeral=True)
-        if owner_id:
-            remove_open_ticket(interaction.guild.id, owner_id)
-        await asyncio.sleep(2)
-        await interaction.channel.delete(reason=f"Ticket closed by {interaction.user}")
+        url = f"{PUBLIC_BASE_URL}/verify/start?guild_id={guild_id}"
+        self.add_item(discord.ui.Button(label="Verify with Discord", style=discord.ButtonStyle.link, emoji="✅", url=url))
 
 
 class TicketSelect(discord.ui.Select):
     def __init__(self):
-        options = [
-            discord.SelectOption(
-                label=info["label"],
-                description=info["description"],
-                emoji=info["emoji"],
-                value=key,
-            )
-            for key, info in TICKET_TYPES.items()
-        ]
+        options = [discord.SelectOption(label=i["label"], description=i["description"], emoji=i["emoji"], value=k) for k, i in TICKET_TYPES.items()]
         super().__init__(placeholder="Choose a ticket type...", options=options, custom_id="moe_ticket_select")
 
     async def callback(self, interaction: discord.Interaction):
         if not interaction.guild or not isinstance(interaction.user, discord.Member):
             return await interaction.response.send_message("This only works inside a server.", ephemeral=True)
-
-        config = get_guild_config(interaction.guild.id)
-        user_id = str(interaction.user.id)
-        existing = config.get("open_tickets", {}).get(user_id)
+        config = await get_guild_config(interaction.guild.id)
+        existing = config.get("open_tickets", {}).get(str(interaction.user.id))
         if existing:
-            channel = interaction.guild.get_channel(existing)
+            channel_id = existing.get("channel_id") if isinstance(existing, dict) else existing
+            channel = interaction.guild.get_channel(int(channel_id or 0))
             if channel:
                 return await interaction.response.send_message(f"You already have an open ticket: {channel.mention}", ephemeral=True)
-            remove_open_ticket(interaction.guild.id, interaction.user.id)
+            await remove_open_ticket(interaction.guild.id, interaction.user.id)
 
         ticket_key = self.values[0]
         ticket_info = TICKET_TYPES[ticket_key]
         category = interaction.guild.get_channel(config.get("ticket_category") or 0)
         if not isinstance(category, discord.CategoryChannel):
-            return await interaction.response.send_message("Ticket category is not configured. Ask an admin to run `/set_ticket_category`.", ephemeral=True)
+            return await interaction.response.send_message("Ticket category is not configured yet.", ephemeral=True)
 
         support_role = interaction.guild.get_role(config.get(ticket_info["support_role_key"]) or 0)
-
         overwrites = {
             interaction.guild.default_role: discord.PermissionOverwrite(view_channel=False),
             interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True, read_message_history=True),
@@ -407,21 +414,17 @@ class TicketSelect(discord.ui.Select):
         if support_role:
             overwrites[support_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True, read_message_history=True)
 
-        name = clean_channel_name(f"ticket-{interaction.user.name}-{ticket_key}")
         channel = await interaction.guild.create_text_channel(
-            name=name,
+            name=clean_channel_name(f"ticket-{interaction.user.name}-{ticket_key}"),
             category=category,
             overwrites=overwrites,
-            topic=f"Ticket type={ticket_key} owner_id={interaction.user.id}",
+            topic=f"owner_id={interaction.user.id} ticket_type={ticket_key}",
             reason=f"Ticket opened by {interaction.user}",
         )
-        add_open_ticket(interaction.guild.id, interaction.user.id, channel.id)
+        await add_open_ticket(interaction.guild.id, interaction.user.id, channel.id, ticket_key)
+        await save_event("ticket_events", {"guild_id": interaction.guild.id, "user_id": interaction.user.id, "channel_id": channel.id, "event": "opened", "ticket_type": ticket_key})
 
-        ping_text = support_role.mention if support_role else "Support team"
-        embed = make_embed(
-            f"{ticket_info['emoji']} {ticket_info['label']}",
-            f"Welcome {interaction.user.mention}. {ping_text} will help you here.\n\nUse the button below when this ticket is finished.",
-        )
+        embed = make_embed(f"{ticket_info['emoji']} {ticket_info['label']}", f"Welcome {interaction.user.mention}. {support_role.mention if support_role else 'Support'} will help you here. Use the button below when finished.")
         await channel.send(content=f"{interaction.user.mention} {support_role.mention if support_role else ''}", embed=embed, view=CloseTicketView())
         await interaction.response.send_message(f"Ticket created: {channel.mention}", ephemeral=True)
 
@@ -432,100 +435,270 @@ class TicketPanelView(discord.ui.View):
         self.add_item(TicketSelect())
 
 
-# =========================
-# KEEP-ALIVE WEB SERVER
-# =========================
-def bot_status_payload() -> Dict[str, Any]:
-    uptime = datetime.now(timezone.utc) - STARTED_AT
-    latency_ms = round(bot.latency * 1000) if bot.latency else None
-    return {
-        "status": "ok",
-        "bot": str(bot.user) if bot.user else "starting",
-        "guilds": len(bot.guilds),
-        "latency_ms": latency_ms,
-        "uptime_seconds": int(uptime.total_seconds()),
-    }
+class CloseTicketView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
 
+    @discord.ui.button(label="Close Ticket", style=discord.ButtonStyle.danger, emoji="🔒", custom_id="moe_close_ticket")
+    async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild or not isinstance(interaction.channel, discord.TextChannel):
+            return await interaction.response.send_message("This can only be used inside a ticket channel.", ephemeral=True)
+        topic = interaction.channel.topic or ""
+        owner_id = None
+        ticket_type = "unknown"
+        for part in topic.split():
+            if part.startswith("owner_id="):
+                try: owner_id = int(part.split("=", 1)[1])
+                except ValueError: pass
+            if part.startswith("ticket_type="):
+                ticket_type = part.split("=", 1)[1]
 
-async def keep_alive_home(request: web.Request) -> web.Response:
-    payload = bot_status_payload()
-    html = f"""
-    <!doctype html>
-    <html lang="en">
-    <head>
-        <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>moealturej bot status</title>
-        <style>
-            body {{
-                margin: 0;
-                min-height: 100vh;
-                display: grid;
-                place-items: center;
-                background: #050505;
-                color: #fff;
-                font-family: Inter, Arial, sans-serif;
-            }}
-            .card {{
-                width: min(520px, calc(100% - 32px));
-                padding: 30px;
-                border: 1px solid rgba(255,255,255,.12);
-                border-radius: 24px;
-                background: linear-gradient(145deg, rgba(124,58,237,.18), rgba(255,255,255,.04));
-                box-shadow: 0 24px 90px rgba(0,0,0,.45);
-            }}
-            h1 {{ margin: 0 0 10px; font-size: 28px; }}
-            p {{ color: rgba(255,255,255,.72); line-height: 1.6; }}
-            code {{ color: #c4b5fd; }}
-        </style>
-    </head>
-    <body>
-        <main class="card">
-            <h1>Bot is online</h1>
-            <p><strong>Status:</strong> {payload['status']}</p>
-            <p><strong>Bot:</strong> {payload['bot']}</p>
-            <p><strong>Servers:</strong> {payload['guilds']}</p>
-            <p><strong>Latency:</strong> {payload['latency_ms']}ms</p>
-            <p>Use <code>/health</code> for JSON health checks.</p>
-        </main>
-    </body>
-    </html>
+        config = await get_guild_config(interaction.guild.id)
+        allowed = interaction.user.guild_permissions.manage_channels or (owner_id == interaction.user.id) or (isinstance(interaction.user, discord.Member) and member_is_command_admin(interaction.user, config))
+        if not allowed:
+            for info in TICKET_TYPES.values():
+                role_id = config.get(info["support_role_key"])
+                if role_id and any(role.id == int(role_id) for role in getattr(interaction.user, "roles", [])):
+                    allowed = True
+        if not allowed:
+            return await interaction.response.send_message("You do not have permission to close this ticket.", ephemeral=True)
+
+        await interaction.response.send_message("Saving transcript and closing ticket...", ephemeral=True)
+        filename, transcript = await build_ticket_transcript(interaction.channel)
+        import io
+
+        owner = interaction.guild.get_member(owner_id or 0)
+        close_embed = make_embed("Ticket Closed", f"Ticket `{interaction.channel.name}` was closed by {interaction.user.mention}.", INFO_COLOR)
+        close_embed.add_field(name="Type", value=ticket_type, inline=True)
+        if owner:
+            try:
+                await owner.send(embed=close_embed, file=discord.File(io.BytesIO(transcript), filename=filename))
+            except discord.Forbidden:
+                pass
+
+        log_channel = interaction.guild.get_channel(config.get("ticket_log_channel") or 0)
+        if isinstance(log_channel, discord.TextChannel):
+            await log_channel.send(embed=close_embed, file=discord.File(io.BytesIO(transcript), filename=filename))
+
+        await save_event("ticket_events", {"guild_id": interaction.guild.id, "user_id": owner_id, "channel_id": interaction.channel.id, "event": "closed", "ticket_type": ticket_type, "closed_by": interaction.user.id})
+        if owner_id:
+            await remove_open_ticket(interaction.guild.id, owner_id)
+        await asyncio.sleep(2)
+        await interaction.channel.delete(reason=f"Ticket closed by {interaction.user}")
+
+# =========================
+# WEB DASHBOARD
+# =========================
+def page(title: str, body: str) -> web.Response:
+    css = """
+    <style>
+    :root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#050509;color:#fff;font-family:Inter,Arial,sans-serif}a{color:#c4b5fd;text-decoration:none}.wrap{width:min(1100px,calc(100% - 28px));margin:auto;padding:38px 0}.nav{display:flex;justify-content:space-between;align-items:center;padding:18px 0}.brand{font-weight:900;letter-spacing:-.04em}.card,.guild{border:1px solid rgba(255,255,255,.1);background:linear-gradient(145deg,rgba(124,58,237,.13),rgba(255,255,255,.035));border-radius:22px;padding:22px;box-shadow:0 24px 90px rgba(0,0,0,.3)}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px}.btn,button{display:inline-flex;align-items:center;justify-content:center;border:0;border-radius:14px;background:#7c3aed;color:white;padding:12px 16px;font-weight:800;cursor:pointer}.muted{color:rgba(255,255,255,.66);line-height:1.6}input,select{width:100%;margin:6px 0 14px;padding:12px 14px;border-radius:14px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.06);color:#fff}.row{display:grid;grid-template-columns:1fr 1fr;gap:14px}@media(max-width:700px){.row{grid-template-columns:1fr}.nav{align-items:flex-start;gap:12px;flex-direction:column}}</style>
     """
-    return web.Response(text=html, content_type="text/html")
+    html_doc = f"<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>{html.escape(title)}</title>{css}</head><body><main class='wrap'><nav class='nav'><div class='brand'>moealturej bot</div><div><a href='/'>Dashboard</a> · <a href='/health'>Health</a> · <a href='/logout'>Logout</a></div></nav>{body}</main></body></html>"
+    return web.Response(text=html_doc, content_type="text/html")
 
 
-async def keep_alive_health(request: web.Request) -> web.Response:
-    return web.json_response(bot_status_payload())
+async def home(request: web.Request) -> web.Response:
+    user = await get_dashboard_user(request)
+    if not user:
+        body = f"<section class='card'><h1>Private Discord bot dashboard</h1><p class='muted'>Login with Discord to manage approved servers. This bot is not for public use.</p><a class='btn' href='/login'>Login with Discord</a><p class='muted'>{html.escape(OWNER_CONTACT)}</p></section>"
+        return page("Dashboard", body)
+    if not is_owner_user(int(user["user_id"])):
+        return page("Not public", f"<section class='card'><h1>Not available publicly</h1><p class='muted'>{html.escape(owner_private_message())}</p></section>")
+
+    guilds = user.get("guilds", [])
+    cards = []
+    bot_guild_ids = {g.id for g in bot.guilds}
+    for g in guilds:
+        if int(g["id"]) in bot_guild_ids and guild_manageable(g):
+            icon = "🟢" if int(g["id"]) in bot_guild_ids else "⚪"
+            cards.append(f"<div class='guild'><h3>{icon} {html.escape(g['name'])}</h3><p class='muted'>Server ID: {g['id']}</p><a class='btn' href='/guild/{g['id']}'>Manage</a></div>")
+    body = f"<h1>Welcome, {html.escape(user.get('username','owner'))}</h1><p class='muted'>Only your Discord account ID <code>{OWNER_USER_ID}</code> can access full dashboard controls.</p><div class='grid'>{''.join(cards) or '<div class=card>No manageable bot servers found.</div>'}</div>"
+    return page("Dashboard", body)
 
 
-async def start_keep_alive_server() -> None:
+async def login(request: web.Request) -> web.Response:
+    state = secrets.token_urlsafe(32)
+    await mdb.oauth_states.insert_one({"state": state, "type": "dashboard", "expires_at": utcnow() + timedelta(minutes=10)})
+    params = {
+        "client_id": DISCORD_CLIENT_ID,
+        "redirect_uri": f"{PUBLIC_BASE_URL}/oauth/callback",
+        "response_type": "code",
+        "scope": "identify guilds",
+        "state": state,
+        "prompt": "none",
+    }
+    raise web.HTTPFound(f"https://discord.com/oauth2/authorize?{urlencode(params)}")
+
+
+async def oauth_callback(request: web.Request) -> web.Response:
+    state = request.query.get("state", "")
+    code = request.query.get("code", "")
+    found = await mdb.oauth_states.find_one_and_delete({"state": state, "type": "dashboard", "expires_at": {"$gt": utcnow()}})
+    if not found or not code:
+        raise web.HTTPBadRequest(text="Invalid or expired OAuth state.")
+    token = await exchange_code(code, f"{PUBLIC_BASE_URL}/oauth/callback")
+    user = await discord_get("/users/@me", token["access_token"])
+    guilds = await discord_get("/users/@me/guilds", token["access_token"])
+    session_id = secrets.token_urlsafe(36)
+    await mdb.sessions.insert_one({"session_id": session_id, "user_id": int(user["id"]), "username": user.get("username", "user"), "guilds": guilds, "expires_at": utcnow() + timedelta(days=7)})
+    resp = web.HTTPFound("/")
+    resp.set_cookie("moe_session", sign_value(session_id), max_age=604800, httponly=True, secure=PUBLIC_BASE_URL.startswith("https://"), samesite="Lax")
+    raise resp
+
+
+async def logout(request: web.Request) -> web.Response:
+    raw = request.cookies.get("moe_session")
+    sid = unsign_value(raw) if raw else None
+    if sid:
+        await mdb.sessions.delete_one({"session_id": sid})
+    resp = web.HTTPFound("/")
+    resp.del_cookie("moe_session")
+    raise resp
+
+
+async def guild_page(request: web.Request) -> web.Response:
+    user = await get_dashboard_user(request)
+    guild_id = int(request.match_info["guild_id"])
+    if not user or not await dashboard_can_access(user, guild_id):
+        return page("Not public", f"<section class='card'><h1>Not available publicly</h1><p class='muted'>{html.escape(owner_private_message())}</p></section>")
+    guild = bot.get_guild(guild_id)
+    if not guild:
+        return page("Missing server", "<section class='card'><h1>Bot is not in this server</h1></section>")
+    config = await get_guild_config(guild_id)
+
+    def options(items, selected):
+        out = ["<option value=''>Not set</option>"]
+        for obj in items:
+            sel = "selected" if selected and int(selected) == obj.id else ""
+            out.append(f"<option value='{obj.id}' {sel}>{html.escape(obj.name)}</option>")
+        return "".join(out)
+
+    roles = [r for r in guild.roles if not r.is_default()]
+    text_channels = guild.text_channels
+    categories = guild.categories
+    body = f"""
+    <section class='card'><h1>{html.escape(guild.name)}</h1><p class='muted'>MongoDB-backed controls for verification, tickets, logs, stats, store, and access.</p></section><br>
+    <form class='card' method='post'>
+      <div class='row'><label>Enabled<select name='enabled'><option value='true' {'selected' if config.get('enabled') else ''}>Enabled</option><option value='false' {'selected' if not config.get('enabled') else ''}>Disabled/private</option></select></label><label>Store URL<input name='store_url' value='{html.escape(config.get('store_url') or DEFAULT_STORE_URL)}'></label></div>
+      <div class='row'><label>Verified role<select name='verified_role'>{options(roles, config.get('verified_role'))}</select></label><label>Auto role<select name='auto_role'>{options(roles, config.get('auto_role'))}</select></label></div>
+      <div class='row'><label>Bot admin role<select name='bot_admin_role'>{options(roles, config.get('bot_admin_role'))}</select></label><label>Welcome channel<select name='welcome_channel'>{options(text_channels, config.get('welcome_channel'))}</select></label></div>
+      <div class='row'><label>Verification channel<select name='verification_channel'>{options(text_channels, config.get('verification_channel'))}</select></label><label>Verification logs<select name='verification_log_channel'>{options(text_channels, config.get('verification_log_channel'))}</select></label></div>
+      <div class='row'><label>Ticket category<select name='ticket_category'>{options(categories, config.get('ticket_category'))}</select></label><label>Ticket transcript logs<select name='ticket_log_channel'>{options(text_channels, config.get('ticket_log_channel'))}</select></label></div>
+      <div class='row'><label>General support role<select name='ticket_role_general'>{options(roles, config.get('ticket_role_general'))}</select></label><label>HWID support role<select name='ticket_role_hwid'>{options(roles, config.get('ticket_role_hwid'))}</select></label></div>
+      <label>Key-not-received support role<select name='ticket_role_key_not_received'>{options(roles, config.get('ticket_role_key_not_received'))}</select></label>
+      <button type='submit'>Save settings</button>
+    </form>
+    <br><section class='card'><h2>Setup links</h2><p class='muted'>OAuth verification URL:</p><code>{PUBLIC_BASE_URL}/verify/start?guild_id={guild_id}</code></section>
+    """
+    return page(guild.name, body)
+
+
+async def guild_save(request: web.Request) -> web.Response:
+    user = await get_dashboard_user(request)
+    guild_id = int(request.match_info["guild_id"])
+    if not user or not await dashboard_can_access(user, guild_id):
+        raise web.HTTPForbidden(text=owner_private_message())
+    data = await request.post()
+    def as_int(name):
+        value = str(data.get(name, "")).strip()
+        return int(value) if value.isdigit() else None
+    updates = {
+        "enabled": str(data.get("enabled")) == "true",
+        "store_url": str(data.get("store_url") or DEFAULT_STORE_URL).strip(),
+        "verified_role": as_int("verified_role"),
+        "auto_role": as_int("auto_role"),
+        "bot_admin_role": as_int("bot_admin_role"),
+        "welcome_channel": as_int("welcome_channel"),
+        "verification_channel": as_int("verification_channel"),
+        "verification_log_channel": as_int("verification_log_channel"),
+        "ticket_category": as_int("ticket_category"),
+        "ticket_log_channel": as_int("ticket_log_channel"),
+        "ticket_role_general": as_int("ticket_role_general"),
+        "ticket_role_hwid": as_int("ticket_role_hwid"),
+        "ticket_role_key_not_received": as_int("ticket_role_key_not_received"),
+    }
+    await set_config(guild_id, updates)
+    raise web.HTTPFound(f"/guild/{guild_id}")
+
+
+async def verify_start(request: web.Request) -> web.Response:
+    guild_id = int(request.query.get("guild_id", "0"))
+    guild = bot.get_guild(guild_id)
+    if not guild:
+        return page("Verification", "<section class='card'><h1>Server not found</h1><p class='muted'>The bot is not in this server.</p></section>")
+    state = secrets.token_urlsafe(32)
+    await mdb.oauth_states.insert_one({"state": state, "type": "verify", "guild_id": guild_id, "expires_at": utcnow() + timedelta(minutes=10)})
+    params = {
+        "client_id": DISCORD_CLIENT_ID,
+        "redirect_uri": f"{PUBLIC_BASE_URL}/verify/callback",
+        "response_type": "code",
+        "scope": "identify guilds.join",
+        "state": state,
+    }
+    raise web.HTTPFound(f"https://discord.com/oauth2/authorize?{urlencode(params)}")
+
+
+async def verify_callback(request: web.Request) -> web.Response:
+    state = request.query.get("state", "")
+    code = request.query.get("code", "")
+    found = await mdb.oauth_states.find_one_and_delete({"state": state, "type": "verify", "expires_at": {"$gt": utcnow()}})
+    if not found or not code:
+        raise web.HTTPBadRequest(text="Invalid or expired verification state.")
+    guild_id = int(found["guild_id"])
+    guild = bot.get_guild(guild_id)
+    if not guild:
+        return page("Verification", "<section class='card'><h1>Server not found</h1></section>")
+    token = await exchange_code(code, f"{PUBLIC_BASE_URL}/verify/callback")
+    user = await discord_get("/users/@me", token["access_token"])
+    user_id = int(user["id"])
+    config = await get_guild_config(guild_id)
+
+    # guilds.join lets the app add the user to the server when the bot is in that server.
+    await discord_put(f"/guilds/{guild_id}/members/{user_id}", BOT_TOKEN, {"access_token": token["access_token"]})
+    await asyncio.sleep(1)
+    member = guild.get_member(user_id) or await guild.fetch_member(user_id)
+    role_ok = await safe_add_role(member, config.get("verified_role"), "User completed OAuth2 verification")
+    await send_verified_dm(member, config.get("store_url", DEFAULT_STORE_URL))
+    await log_verification(guild, member, "oauth2", "success" if role_ok else "success", "OAuth authorized. Role assigned." if role_ok else "OAuth authorized, but verified role was not assigned. Check role position/config.")
+    return page("Verified", f"<section class='card'><h1>Verified</h1><p class='muted'>You are verified in {html.escape(guild.name)}. You can close this page.</p></section>")
+
+
+async def health(request: web.Request) -> web.Response:
+    uptime = utcnow() - STARTED_AT
+    return web.json_response({"status": "ok", "bot": str(bot.user) if bot.user else "starting", "guilds": len(bot.guilds), "latency_ms": round(bot.latency * 1000) if bot.latency else None, "uptime_seconds": int(uptime.total_seconds())})
+
+
+async def start_web() -> None:
     global web_runner
-    if web_runner is not None:
+    if web_runner:
         return
-
-    app = web.Application()
-    app.router.add_get("/", keep_alive_home)
-    app.router.add_get("/health", keep_alive_health)
-
+    app = web.Application(client_max_size=8 * 1024 ** 2)
+    app.router.add_get("/", home)
+    app.router.add_get("/login", login)
+    app.router.add_get("/oauth/callback", oauth_callback)
+    app.router.add_get("/logout", logout)
+    app.router.add_get("/guild/{guild_id}", guild_page)
+    app.router.add_post("/guild/{guild_id}", guild_save)
+    app.router.add_get("/verify/start", verify_start)
+    app.router.add_get("/verify/callback", verify_callback)
+    app.router.add_get("/health", health)
     web_runner = web.AppRunner(app)
     await web_runner.setup()
-    site = web.TCPSite(web_runner, WEB_HOST, WEB_PORT)
-    await site.start()
-    print(f"Keep-alive website running on http://{WEB_HOST}:{WEB_PORT}")
-
-
-async def stop_keep_alive_server() -> None:
-    global web_runner
-    if web_runner is not None:
-        await web_runner.cleanup()
-        web_runner = None
+    await web.TCPSite(web_runner, WEB_HOST, WEB_PORT).start()
+    print(f"Dashboard running on http://{WEB_HOST}:{WEB_PORT}")
 
 # =========================
-# EVENTS
+# EVENTS / TASKS
 # =========================
 @bot.event
+async def setup_hook():
+    await init_mongo()
+    await start_web()
+
+
+@bot.event
 async def on_ready():
-    bot.add_view(VerifyView())
     bot.add_view(TicketPanelView())
     bot.add_view(CloseTicketView())
     try:
@@ -533,247 +706,164 @@ async def on_ready():
         print(f"Synced {len(synced)} slash commands.")
     except Exception as e:
         print(f"Slash command sync failed: {e}")
-
-    if not rotate_status.is_running():
-        rotate_status.start()
-    if not update_stats.is_running():
-        update_stats.start()
-    if not self_ping.is_running():
-        self_ping.start()
-
+    if not rotate_status.is_running(): rotate_status.start()
+    if not update_stats.is_running(): update_stats.start()
+    if not self_ping.is_running(): self_ping.start()
     print(f"Logged in as {bot.user}")
 
 
 @bot.event
 async def on_member_join(member: discord.Member):
-    config = get_guild_config(member.guild.id)
-    await safe_add_role(member, config.get("auto_role"), "Auto role on join")
-
+    config = await get_guild_config(member.guild.id)
+    if config.get("auto_role"):
+        await safe_add_role(member, config.get("auto_role"), "Auto role on join")
     channel = member.guild.get_channel(config.get("welcome_channel") or 0)
     if isinstance(channel, discord.TextChannel):
-        embed = make_embed(
-            "Welcome",
-            f"Welcome {member.mention} to **{member.guild.name}**. Please verify if required and open a ticket if you need support.",
-        )
+        embed = make_embed("Welcome", f"Welcome {member.mention} to **{member.guild.name}**. Please verify if required and open a ticket if you need support.")
         embed.set_thumbnail(url=member.display_avatar.url)
         await channel.send(embed=embed)
 
-# =========================
-# BACKGROUND TASKS
-# =========================
+
 @tasks.loop(seconds=45)
 async def rotate_status():
-    if not ROTATING_STATUSES:
-        return
+    if not ROTATING_STATUSES: return
     status = ROTATING_STATUSES[rotate_status.current_loop % len(ROTATING_STATUSES)]
-    if status.lower().startswith("watching "):
-        text = status[9:]
-        activity = discord.Activity(type=discord.ActivityType.watching, name=text)
-    else:
-        activity = discord.Game(name=status)
+    activity = discord.Activity(type=discord.ActivityType.watching, name=status[9:]) if status.lower().startswith("watching ") else discord.Game(name=status)
     await bot.change_presence(status=discord.Status.online, activity=activity)
 
 
 @tasks.loop(minutes=10)
 async def update_stats():
     for guild in bot.guilds:
-        config = get_guild_config(guild.id)
+        config = await get_guild_config(guild.id)
         channels = config.get("stats_channels", {})
-        if not channels:
-            continue
-
         humans = len([m for m in guild.members if not m.bot])
         bots = len([m for m in guild.members if m.bot])
         members = guild.member_count or len(guild.members)
         boosts = guild.premium_subscription_count or 0
-
-        stats = {
-            "members": f"Members: {members}",
-            "humans": f"Humans: {humans}",
-            "bots": f"Bots: {bots}",
-            "boosts": f"Boosts: {boosts}",
-        }
-
+        stats = {"members": f"👥 Members: {members}", "humans": f"🧑 Humans: {humans}", "bots": f"🤖 Bots: {bots}", "boosts": f"🚀 Boosts: {boosts}"}
         for key, name in stats.items():
-            channel_id = channels.get(key)
-            channel = guild.get_channel(channel_id or 0)
+            channel = guild.get_channel(channels.get(key) or 0)
             if isinstance(channel, discord.VoiceChannel) and channel.name != name:
-                try:
-                    await channel.edit(name=name, reason="Live server stats update")
-                except discord.HTTPException:
-                    pass
-
+                try: await channel.edit(name=name, reason="Live server stats update")
+                except discord.HTTPException: pass
 
 
 @tasks.loop(minutes=1)
 async def self_ping():
-    # Pings the local keep-alive server every minute.
-    # If KEEP_ALIVE_URL is set in .env, it will ping that instead.
     url = KEEP_ALIVE_URL or f"http://127.0.0.1:{WEB_PORT}/health"
     try:
         async with ClientSession() as session:
             async with session.get(url, timeout=15) as response:
                 await response.text()
-                if response.status >= 400:
-                    print(f"Self-ping got HTTP {response.status} from {url}")
     except (ClientError, asyncio.TimeoutError) as e:
         print(f"Self-ping failed for {url}: {e}")
 
 # =========================
-# BASIC COMMANDS
+# COMMANDS
 # =========================
-@bot.tree.command(name="ping", description="Check the bot latency.")
+@bot.tree.command(name="ping", description="Check bot latency.")
+@guild_enabled_or_owner()
 async def ping(interaction: discord.Interaction):
-    latency = round(bot.latency * 1000)
-    await interaction.response.send_message(embed=make_embed("Pong", f"Latency: `{latency}ms`"), ephemeral=True)
+    await interaction.response.send_message(embed=make_embed("Pong", f"Latency: `{round(bot.latency * 1000)}ms`"), ephemeral=True)
 
 
 @bot.tree.command(name="store", description="Get the store link.")
+@guild_enabled_or_owner()
 async def store(interaction: discord.Interaction):
-    if not interaction.guild:
-        return await interaction.response.send_message(DEFAULT_STORE_URL, ephemeral=True)
-    config = get_guild_config(interaction.guild.id)
-    await interaction.response.send_message(embed=make_embed("Store", f"Visit the store here:\n{config.get('store_url', DEFAULT_STORE_URL)}"))
+    config = await get_guild_config(interaction.guild.id) if interaction.guild else {"store_url": DEFAULT_STORE_URL}
+    await interaction.response.send_message(embed=make_embed("Store", f"Visit the store here:\n{config.get('store_url', DEFAULT_STORE_URL)}"), ephemeral=True)
 
 
-@bot.tree.command(name="help", description="Show public bot commands.")
+@bot.tree.command(name="help", description="Show public commands.")
 async def help_command(interaction: discord.Interaction):
-    embed = make_embed(
-        "Help",
-        "Here are the public commands available in this server.",
-    )
-    embed.add_field(
-        name="Public Commands",
-        value=(
-            "`/ping` - Check the bot latency\n"
-            "`/store` - Get the store link\n"
-            "`/help` - Show this help menu"
-        ),
-        inline=False,
-    )
-    embed.set_footer(text="moealturej support")
+    embed = make_embed("Help", "Public commands available here.")
+    embed.add_field(name="Commands", value="`/ping` - Check latency\n`/store` - Store link\n`/help` - This menu", inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@bot.tree.command(name="commands", description="Show admin bot commands.")
+@bot.tree.command(name="commands", description="Show private owner/admin commands.")
 @admin_only()
 async def commands_menu(interaction: discord.Interaction):
-    embed = make_embed(
-        "Admin Commands",
-        "Private setup and management commands for this server.",
-    )
-    embed.add_field(
-        name="Owner",
-        value="`/set_admin_role` - Set which role can use admin bot commands",
-        inline=False,
-    )
-    embed.add_field(
-        name="Verification / Welcome",
-        value=(
-            "`/set_verified_role` - Set the verified role\n"
-            "`/set_auto_role` - Set the join autorole\n"
-            "`/set_welcome_channel` - Set the welcome channel\n"
-            "`/send_verification_panel` - Send the captcha panel"
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="Tickets",
-        value=(
-            "`/set_ticket_category` - Set the ticket category\n"
-            "`/set_ticket_role` - Set support roles per ticket type\n"
-            "`/send_ticket_panel` - Send the ticket panel"
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="Announcements / Store / Stats",
-        value=(
-            "`/set_store` - Set the store URL\n"
-            "`/set_announce_assets` - Set default announcement assets\n"
-            "`/announce` - Send an announcement embed\n"
-            "`/stats_setup` - Create/connect live stats channels\n"
-            "`/config_show` - Show saved server config"
-        ),
-        inline=False,
-    )
-    embed.set_footer(text="Only configured bot admins can see/use this menu")
+    embed = make_embed("Admin Commands", "Private setup commands for this bot.")
+    embed.add_field(name="Setup", value="`/setup_enable` `/set_admin_role` `/set_verified_role` `/set_auto_role` `/set_logs` `/set_ticket_category` `/set_ticket_role` `/stats_setup`", inline=False)
+    embed.add_field(name="Panels", value="`/send_verification_panel` `/send_ticket_panel`", inline=False)
+    embed.add_field(name="Content", value="`/set_store` `/announce` `/config_show`", inline=False)
+    embed.add_field(name="Dashboard", value=f"{PUBLIC_BASE_URL}/", inline=False)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# =========================
-# SETUP COMMANDS
-# =========================
-@bot.tree.command(name="set_admin_role", description="Owner only: set the role allowed to use admin bot commands.")
-@owner_only()
+
+@bot.tree.command(name="setup_enable", description="Owner: enable or disable this bot in this server.")
+@admin_only()
+async def setup_enable(interaction: discord.Interaction, enabled: bool):
+    if not is_owner_user(interaction.user.id):
+        return await interaction.response.send_message(owner_private_message(), ephemeral=True)
+    await set_config(interaction.guild.id, {"enabled": enabled})
+    await interaction.response.send_message(f"Server access is now {'enabled' if enabled else 'disabled/private'}.", ephemeral=True)
+
+
+@bot.tree.command(name="set_admin_role", description="Set the role allowed to use admin bot commands.")
+@admin_only()
 async def set_admin_role(interaction: discord.Interaction, role: discord.Role):
-    update_guild_config(interaction.guild.id, "bot_admin_role", role.id)
-    await interaction.response.send_message(f"Bot admin role set to {role.mention}. Members with this role can use `/commands` and setup commands.", ephemeral=True)
+    await set_config(interaction.guild.id, {"bot_admin_role": role.id})
+    await interaction.response.send_message(f"Bot admin role set to {role.mention}.", ephemeral=True)
 
 
-@bot.tree.command(name="set_verified_role", description="Set the role given after captcha verification.")
+@bot.tree.command(name="set_verified_role", description="Set the role given after OAuth2 verification.")
 @admin_only()
 async def set_verified_role(interaction: discord.Interaction, role: discord.Role):
-    update_guild_config(interaction.guild.id, "verified_role", role.id)
+    await set_config(interaction.guild.id, {"verified_role": role.id})
     await interaction.response.send_message(f"Verified role set to {role.mention}.", ephemeral=True)
 
 
 @bot.tree.command(name="set_auto_role", description="Set the role automatically given when a member joins.")
 @admin_only()
 async def set_auto_role(interaction: discord.Interaction, role: discord.Role):
-    update_guild_config(interaction.guild.id, "auto_role", role.id)
+    await set_config(interaction.guild.id, {"auto_role": role.id})
     await interaction.response.send_message(f"Auto role set to {role.mention}.", ephemeral=True)
 
 
-@bot.tree.command(name="set_welcome_channel", description="Set the welcome message channel.")
+@bot.tree.command(name="set_logs", description="Set verification and ticket transcript log channels.")
 @admin_only()
-async def set_welcome_channel(interaction: discord.Interaction, channel: discord.TextChannel):
-    update_guild_config(interaction.guild.id, "welcome_channel", channel.id)
-    await interaction.response.send_message(f"Welcome channel set to {channel.mention}.", ephemeral=True)
+async def set_logs(interaction: discord.Interaction, verification_logs: Optional[discord.TextChannel] = None, ticket_transcripts: Optional[discord.TextChannel] = None):
+    updates = {}
+    if verification_logs: updates["verification_log_channel"] = verification_logs.id
+    if ticket_transcripts: updates["ticket_log_channel"] = ticket_transcripts.id
+    await set_config(interaction.guild.id, updates)
+    await interaction.response.send_message("Log channels updated.", ephemeral=True)
 
 
-@bot.tree.command(name="send_verification_panel", description="Send the verification captcha panel.")
+@bot.tree.command(name="send_verification_panel", description="Send the OAuth2 verification panel.")
 @admin_only()
 async def send_verification_panel(interaction: discord.Interaction, channel: discord.TextChannel):
-    update_guild_config(interaction.guild.id, "verification_channel", channel.id)
-    embed = make_embed(
-        "Verify Access",
-        "Click the button below and copy the captcha text exactly to receive your verified role.",
-    )
-    embed.set_footer(text="moealturej verification")
-    await channel.send(embed=embed, view=VerifyView())
-    await interaction.response.send_message(f"Verification panel sent in {channel.mention}.", ephemeral=True)
+    await set_config(interaction.guild.id, {"verification_channel": channel.id})
+    embed = make_embed("Verify Access", "Click below to verify with Discord OAuth2. This securely confirms your Discord account and can add you to the server if needed.")
+    embed.set_footer(text="moealturej OAuth2 verification")
+    await channel.send(embed=embed, view=OAuthVerifyView(interaction.guild.id))
+    await interaction.response.send_message(f"OAuth2 verification panel sent in {channel.mention}.", ephemeral=True)
 
 
 @bot.tree.command(name="set_ticket_category", description="Set the category where tickets will be created.")
 @admin_only()
 async def set_ticket_category(interaction: discord.Interaction, category: discord.CategoryChannel):
-    update_guild_config(interaction.guild.id, "ticket_category", category.id)
+    await set_config(interaction.guild.id, {"ticket_category": category.id})
     await interaction.response.send_message(f"Ticket category set to **{category.name}**.", ephemeral=True)
 
 
 @bot.tree.command(name="set_ticket_role", description="Set the support role for a ticket type.")
-@app_commands.choices(ticket_type=[
-    app_commands.Choice(name="General support", value="general"),
-    app_commands.Choice(name="Key HWID reset", value="hwid"),
-    app_commands.Choice(name="Key not received", value="key_not_received"),
-])
+@app_commands.choices(ticket_type=[app_commands.Choice(name="General support", value="general"), app_commands.Choice(name="Key HWID reset", value="hwid"), app_commands.Choice(name="Key not received", value="key_not_received")])
 @admin_only()
 async def set_ticket_role(interaction: discord.Interaction, ticket_type: app_commands.Choice[str], role: discord.Role):
-    key = TICKET_TYPES[ticket_type.value]["support_role_key"]
-    update_guild_config(interaction.guild.id, key, role.id)
+    await set_config(interaction.guild.id, {TICKET_TYPES[ticket_type.value]["support_role_key"]: role.id})
     await interaction.response.send_message(f"{ticket_type.name} support role set to {role.mention}.", ephemeral=True)
 
 
-@bot.tree.command(name="send_ticket_panel", description="Send the ticket creation panel.")
+@bot.tree.command(name="send_ticket_panel", description="Send the ticket panel.")
 @admin_only()
 async def send_ticket_panel(interaction: discord.Interaction, channel: discord.TextChannel):
-    update_guild_config(interaction.guild.id, "ticket_panel_channel", channel.id)
-    embed = make_embed(
-        "Support Tickets",
-        "Choose the ticket type that matches your issue. A private support channel will be created for you.",
-    )
+    await set_config(interaction.guild.id, {"ticket_panel_channel": channel.id})
+    embed = make_embed("Support Tickets", "Choose the ticket type that matches your issue. A private support channel will be created.")
     embed.add_field(name="Options", value="💬 General support\n🔑 Key HWID reset\n📦 Key not received", inline=False)
-    embed.set_footer(text="moealturej support")
     await channel.send(embed=embed, view=TicketPanelView())
     await interaction.response.send_message(f"Ticket panel sent in {channel.mention}.", ephemeral=True)
 
@@ -781,113 +871,62 @@ async def send_ticket_panel(interaction: discord.Interaction, channel: discord.T
 @bot.tree.command(name="set_store", description="Set the store URL used by /store.")
 @admin_only()
 async def set_store(interaction: discord.Interaction, url: str):
-    update_guild_config(interaction.guild.id, "store_url", url)
+    await set_config(interaction.guild.id, {"store_url": url})
     await interaction.response.send_message(f"Store URL set to: {url}", ephemeral=True)
 
 
-@bot.tree.command(name="set_announce_assets", description="Set default announcement image and footer.")
+@bot.tree.command(name="announce", description="Send a clean announcement embed.")
 @admin_only()
-async def set_announce_assets(interaction: discord.Interaction, footer: Optional[str] = None, image_url: Optional[str] = None):
-    if footer is not None:
-        update_guild_config(interaction.guild.id, "announce_footer", footer)
-    if image_url is not None:
-        update_guild_config(interaction.guild.id, "announce_image", image_url)
-    await interaction.response.send_message("Announcement assets updated.", ephemeral=True)
-
-
-@bot.tree.command(name="announce", description="Send a clean webhook-style announcement embed.")
-@admin_only()
-async def announce(
-    interaction: discord.Interaction,
-    channel: discord.TextChannel,
-    title: str,
-    message: str,
-    image_url: Optional[str] = None,
-    footer: Optional[str] = None,
-):
-    config = get_guild_config(interaction.guild.id)
+async def announce(interaction: discord.Interaction, channel: discord.TextChannel, title: str, message: str, image_url: Optional[str] = None):
+    config = await get_guild_config(interaction.guild.id)
     embed = make_embed(title, message)
-    final_image = image_url or config.get("announce_image")
-    final_footer = footer or config.get("announce_footer") or "moealturej"
-    if final_image:
-        embed.set_image(url=final_image)
-    embed.set_footer(text=final_footer)
+    if image_url or config.get("announce_image"):
+        embed.set_image(url=image_url or config.get("announce_image"))
+    embed.set_footer(text=config.get("announce_footer") or "moealturej")
     await channel.send(embed=embed)
     await interaction.response.send_message(f"Announcement sent in {channel.mention}.", ephemeral=True)
 
 
-@bot.tree.command(name="stats_setup", description="Create or connect live server stats voice channels.")
+@bot.tree.command(name="stats_setup", description="Create/connect emoji live server stats voice channels.")
 @admin_only()
 async def stats_setup(interaction: discord.Interaction, category: Optional[discord.CategoryChannel] = None):
     guild = interaction.guild
     if category is None:
-        category = await guild.create_category("Server Stats", reason="Live server stats setup")
-
-    update_guild_config(guild.id, "stats_category", category.id)
-
-    config = get_guild_config(guild.id)
-    current = config.get("stats_channels", {})
-    created_or_found = {}
-
-    base_overwrites = {
-        guild.default_role: discord.PermissionOverwrite(connect=False, view_channel=True),
-        guild.me: discord.PermissionOverwrite(connect=True, manage_channels=True, view_channel=True),
-    }
-
-    names = {
-        "members": "Members: 0",
-        "humans": "Humans: 0",
-        "bots": "Bots: 0",
-        "boosts": "Boosts: 0",
-    }
-
-    for key, default_name in names.items():
-        channel = guild.get_channel(current.get(key) or 0)
+        category = await guild.create_category("📊 Server Stats", reason="Live server stats setup")
+    overwrites = {guild.default_role: discord.PermissionOverwrite(connect=False, view_channel=True), guild.me: discord.PermissionOverwrite(connect=True, manage_channels=True, view_channel=True)}
+    defaults = {"members": "👥 Members: 0", "humans": "🧑 Humans: 0", "bots": "🤖 Bots: 0", "boosts": "🚀 Boosts: 0"}
+    created = {}
+    config = await get_guild_config(guild.id)
+    for key, name in defaults.items():
+        channel = guild.get_channel((config.get("stats_channels") or {}).get(key) or 0)
         if not isinstance(channel, discord.VoiceChannel):
-            channel = await guild.create_voice_channel(default_name, category=category, overwrites=base_overwrites, reason="Live stats channel created")
-        created_or_found[key] = channel.id
-
-    update_guild_config(guild.id, "stats_channels", created_or_found)
+            channel = await guild.create_voice_channel(name, category=category, overwrites=overwrites, reason="Live stats channel created")
+        created[key] = channel.id
+    await set_config(guild.id, {"stats_category": category.id, "stats_channels": created})
     await update_stats()
-    await interaction.response.send_message(f"Live stats channels are set in **{category.name}**.", ephemeral=True)
+    await interaction.response.send_message(f"Emoji live stats channels are set in **{category.name}**.", ephemeral=True)
 
 
-@bot.tree.command(name="config_show", description="Show this server's bot configuration.")
+@bot.tree.command(name="config_show", description="Show this server's saved config.")
 @admin_only()
 async def config_show(interaction: discord.Interaction):
-    config = get_guild_config(interaction.guild.id)
-
-    def role_text(role_id):
-        role = interaction.guild.get_role(role_id or 0)
-        return role.mention if role else "Not set"
-
-    def channel_text(channel_id):
-        channel = interaction.guild.get_channel(channel_id or 0)
-        return channel.mention if channel else "Not set"
-
-    embed = make_embed("Server Config", "Current saved settings for this server.")
-    embed.add_field(name="Bot Admin Role", value=role_text(config.get("bot_admin_role")), inline=True)
-    embed.add_field(name="Verified Role", value=role_text(config.get("verified_role")), inline=True)
-    embed.add_field(name="Auto Role", value=role_text(config.get("auto_role")), inline=True)
-    embed.add_field(name="Welcome Channel", value=channel_text(config.get("welcome_channel")), inline=True)
-    embed.add_field(name="Ticket Category", value=channel_text(config.get("ticket_category")), inline=True)
-    embed.add_field(name="General Support Role", value=role_text(config.get("ticket_role_general")), inline=True)
-    embed.add_field(name="HWID Reset Role", value=role_text(config.get("ticket_role_hwid")), inline=True)
-    embed.add_field(name="Key Not Received Role", value=role_text(config.get("ticket_role_key_not_received")), inline=True)
-    embed.add_field(name="Store URL", value=config.get("store_url", DEFAULT_STORE_URL), inline=False)
-    embed.add_field(name="Announcement Footer", value=config.get("announce_footer") or "Not set", inline=True)
-    embed.add_field(name="Announcement Image", value=config.get("announce_image") or "Not set", inline=True)
+    config = await get_guild_config(interaction.guild.id)
+    embed = make_embed("Server Config", "Current MongoDB settings.")
+    for key in ["enabled", "verified_role", "auto_role", "bot_admin_role", "verification_log_channel", "ticket_log_channel", "ticket_category", "store_url"]:
+        embed.add_field(name=key, value=str(config.get(key)), inline=True)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # =========================
-# START BOT
+# START
 # =========================
 if __name__ == "__main__":
-    if not BOT_TOKEN:
-        raise RuntimeError("Missing BOT_TOKEN. Add it to your .env file before starting the bot.")
-    try:
-        bot.run(BOT_TOKEN)
-    finally:
-        # discord.py closes the event loop after bot.run(), so normal cleanup may not run here.
-        # The web server is tied to the bot process and will stop when the process exits.
-        pass
+    missing = [name for name, value in {
+        "BOT_TOKEN": BOT_TOKEN,
+        "DISCORD_CLIENT_ID": DISCORD_CLIENT_ID,
+        "DISCORD_CLIENT_SECRET": DISCORD_CLIENT_SECRET,
+        "PUBLIC_BASE_URL": PUBLIC_BASE_URL,
+        "MONGO_URI": MONGO_URI,
+    }.items() if not value]
+    if missing:
+        raise RuntimeError(f"Missing required .env values: {', '.join(missing)}")
+    bot.run(BOT_TOKEN)
