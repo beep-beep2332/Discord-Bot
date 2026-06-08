@@ -394,8 +394,26 @@ async def build_ticket_transcript(channel: discord.TextChannel) -> tuple[str, by
 class OAuthVerifyView(discord.ui.View):
     def __init__(self, guild_id: int):
         super().__init__(timeout=None)
-        url = f"{PUBLIC_BASE_URL}/verify/start?guild_id={guild_id}"
-        self.add_item(discord.ui.Button(label="Verify with Discord", style=discord.ButtonStyle.link, emoji="✅", url=url))
+        self.guild_id = int(guild_id)
+
+    @discord.ui.button(label="Verify with Discord", style=discord.ButtonStyle.success, emoji="✅", custom_id="moe_oauth_verify")
+    async def verify_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            return await interaction.response.send_message("This verification button only works inside the server.", ephemeral=True)
+
+        config = await get_guild_config(interaction.guild.id)
+        verified_role_id = config.get("verified_role")
+        verified_role = interaction.guild.get_role(int(verified_role_id or 0)) if verified_role_id else None
+        if verified_role and verified_role in interaction.user.roles:
+            removed = await safe_remove_role(interaction.user, config.get("unverified_role"), "Already verified cleanup")
+            extra = " I also removed your unverified role." if removed else ""
+            await log_verification(interaction.guild, interaction.user, "panel-check", "already_verified", "User clicked verify but already had verified role." + extra)
+            return await interaction.response.send_message(f"✅ You are already verified in **{interaction.guild.name}**.{extra}", ephemeral=True)
+
+        url = f"{PUBLIC_BASE_URL}/verify/start?guild_id={interaction.guild.id}&user_id={interaction.user.id}"
+        view = discord.ui.View(timeout=180)
+        view.add_item(discord.ui.Button(label="Open secure verification", style=discord.ButtonStyle.link, emoji="🔐", url=url))
+        await interaction.response.send_message("Click the secure OAuth2 link below to verify your Discord account.", view=view, ephemeral=True)
 
 
 class TicketSelect(discord.ui.Select):
@@ -509,7 +527,7 @@ def page(title: str, body: str) -> web.Response:
     css = """
     <style>
     :root{color-scheme:dark;--bg:#050509;--panel:rgba(15,15,26,.78);--panel2:rgba(124,58,237,.12);--line:rgba(255,255,255,.105);--text:#fff;--muted:rgba(255,255,255,.66);--purple:#8b5cf6;--purple2:#c084fc;--green:#22c55e;--blue:#38bdf8;--danger:#fb7185}
-    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;min-height:100vh;background:radial-gradient(circle at top left,rgba(124,58,237,.24),transparent 34rem),radial-gradient(circle at 80% 12%,rgba(56,189,248,.12),transparent 28rem),linear-gradient(180deg,#06060b,#030306 70%);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;overflow-x:hidden}body:before{content:"";position:fixed;inset:0;pointer-events:none;background-image:linear-gradient(rgba(255,255,255,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.035) 1px,transparent 1px);background-size:64px 64px;mask-image:linear-gradient(to bottom,black,transparent 78%)}a{color:#ddd6fe;text-decoration:none}.wrap{width:min(1180px,calc(100% - 30px));margin:auto;padding:28px 0 54px}.nav{position:sticky;top:14px;z-index:10;display:flex;justify-content:space-between;align-items:center;margin-bottom:26px;padding:12px 14px;border:1px solid var(--line);border-radius:22px;background:rgba(7,7,13,.72);backdrop-filter:blur(18px);box-shadow:0 20px 80px rgba(0,0,0,.32)}.brand{display:flex;align-items:center;gap:10px;font-weight:950;letter-spacing:-.045em}.brand:before{content:"✦";display:grid;place-items:center;width:34px;height:34px;border-radius:12px;background:linear-gradient(135deg,var(--purple),var(--blue));box-shadow:0 12px 40px rgba(139,92,246,.42)}.navlinks{display:flex;align-items:center;gap:10px}.navlinks a{padding:9px 12px;border-radius:12px;color:rgba(255,255,255,.76)}.navlinks a:hover{background:rgba(255,255,255,.07);color:#fff}.hero{position:relative;overflow:hidden;border:1px solid var(--line);border-radius:30px;padding:34px;background:linear-gradient(145deg,rgba(139,92,246,.22),rgba(56,189,248,.07) 45%,rgba(255,255,255,.035));box-shadow:0 28px 100px rgba(0,0,0,.38)}.hero:after{content:"";position:absolute;right:-90px;top:-90px;width:260px;height:260px;background:radial-gradient(circle,rgba(192,132,252,.32),transparent 68%)}h1{font-size:clamp(32px,5vw,62px);letter-spacing:-.065em;line-height:.94;margin:0 0 12px}h2{letter-spacing:-.035em;margin:0 0 12px}h3{letter-spacing:-.025em;margin:0 0 10px}.card,.guild,.panel{position:relative;border:1px solid var(--line);background:linear-gradient(145deg,var(--panel),rgba(255,255,255,.035));border-radius:24px;padding:22px;box-shadow:0 24px 90px rgba(0,0,0,.26);backdrop-filter:blur(18px)}.guild{transition:transform .18s ease,border-color .18s ease,background .18s ease}.guild:hover{transform:translateY(-3px);border-color:rgba(192,132,252,.38);background:linear-gradient(145deg,rgba(124,58,237,.18),rgba(255,255,255,.045))}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:15px}.section-title{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;margin:28px 0 12px}.btn,button{display:inline-flex;align-items:center;justify-content:center;gap:9px;border:0;border-radius:15px;background:linear-gradient(135deg,#7c3aed,#a855f7);color:white;padding:12px 17px;font-weight:900;cursor:pointer;box-shadow:0 15px 42px rgba(124,58,237,.25);transition:transform .16s ease,filter .16s ease}.btn:hover,button:hover{transform:translateY(-1px);filter:brightness(1.1)}.btn.secondary{background:rgba(255,255,255,.08);box-shadow:none;border:1px solid var(--line)}.muted{color:var(--muted);line-height:1.62}.pill{display:inline-flex;align-items:center;gap:8px;padding:8px 11px;border-radius:999px;background:rgba(34,197,94,.11);color:#bbf7d0;border:1px solid rgba(34,197,94,.22);font-size:13px;font-weight:800}code{display:inline-block;max-width:100%;overflow:auto;padding:11px 13px;border-radius:14px;border:1px solid var(--line);background:rgba(0,0,0,.32);color:#ddd6fe}label{display:block;color:rgba(255,255,255,.82);font-size:13px;font-weight:850;letter-spacing:.01em}input,select{width:100%;margin:8px 0 16px;padding:13px 14px;border-radius:15px;border:1px solid rgba(255,255,255,.13);background:#11111c;color:#f8fafc;outline:none;box-shadow:inset 0 0 0 9999px rgba(255,255,255,.015)}input:focus,select:focus{border-color:rgba(192,132,252,.7);box-shadow:0 0 0 4px rgba(124,58,237,.16)}select{appearance:none;background-color:#11111c;background-image:linear-gradient(45deg,transparent 50%,#c4b5fd 50%),linear-gradient(135deg,#c4b5fd 50%,transparent 50%);background-position:calc(100% - 18px) 52%,calc(100% - 12px) 52%;background-size:6px 6px,6px 6px;background-repeat:no-repeat;padding-right:38px}select option{background:#0f0f1a;color:#f8fafc}select option:hover,select option:checked{background:#7c3aed;color:#fff}.row{display:grid;grid-template-columns:1fr 1fr;gap:16px}.form-section{margin-top:16px;padding-top:16px;border-top:1px solid var(--line)}.savebar{position:sticky;bottom:14px;display:flex;justify-content:flex-end;margin-top:8px;padding:12px;border:1px solid var(--line);border-radius:20px;background:rgba(7,7,13,.78);backdrop-filter:blur(18px)}@media(max-width:760px){.row{grid-template-columns:1fr}.nav{position:relative;top:0;align-items:flex-start;gap:12px;flex-direction:column}.navlinks{flex-wrap:wrap}.hero{padding:24px}h1{font-size:38px}}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;min-height:100vh;background:radial-gradient(circle at top left,rgba(124,58,237,.24),transparent 34rem),radial-gradient(circle at 80% 12%,rgba(56,189,248,.12),transparent 28rem),linear-gradient(180deg,#06060b,#030306 70%);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;overflow-x:hidden}body:before{content:"";position:fixed;inset:0;pointer-events:none;background-image:linear-gradient(rgba(255,255,255,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.035) 1px,transparent 1px);background-size:64px 64px;mask-image:linear-gradient(to bottom,black,transparent 78%)}a{color:#ddd6fe;text-decoration:none}.wrap{width:min(1180px,calc(100% - 30px));margin:auto;padding:28px 0 54px}.nav{position:sticky;top:14px;z-index:10;display:flex;justify-content:space-between;align-items:center;margin-bottom:26px;padding:12px 14px;border:1px solid var(--line);border-radius:22px;background:rgba(7,7,13,.72);backdrop-filter:blur(18px);box-shadow:0 20px 80px rgba(0,0,0,.32)}.brand{display:flex;align-items:center;gap:10px;font-weight:950;letter-spacing:-.045em}.brand:before{content:"✦";display:grid;place-items:center;width:34px;height:34px;border-radius:12px;background:linear-gradient(135deg,var(--purple),var(--blue));box-shadow:0 12px 40px rgba(139,92,246,.42)}.navlinks{display:flex;align-items:center;gap:10px}.navlinks a{padding:9px 12px;border-radius:12px;color:rgba(255,255,255,.76)}.navlinks a:hover{background:rgba(255,255,255,.07);color:#fff}.hero{position:relative;overflow:hidden;border:1px solid var(--line);border-radius:30px;padding:34px;background:linear-gradient(145deg,rgba(139,92,246,.22),rgba(56,189,248,.07) 45%,rgba(255,255,255,.035));box-shadow:0 28px 100px rgba(0,0,0,.38)}.hero:after{content:"";position:absolute;right:-90px;top:-90px;width:260px;height:260px;background:radial-gradient(circle,rgba(192,132,252,.32),transparent 68%)}h1{font-size:clamp(32px,5vw,62px);letter-spacing:-.065em;line-height:.94;margin:0 0 12px}h2{letter-spacing:-.035em;margin:0 0 12px}h3{letter-spacing:-.025em;margin:0 0 10px}.card,.guild,.panel{position:relative;border:1px solid var(--line);background:linear-gradient(145deg,var(--panel),rgba(255,255,255,.035));border-radius:24px;padding:22px;box-shadow:0 24px 90px rgba(0,0,0,.26);backdrop-filter:blur(18px)}.guild{transition:transform .18s ease,border-color .18s ease,background .18s ease}.guild:hover{transform:translateY(-3px);border-color:rgba(192,132,252,.38);background:linear-gradient(145deg,rgba(124,58,237,.18),rgba(255,255,255,.045))}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:15px}.section-title{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;margin:28px 0 12px}.btn,button{display:inline-flex;align-items:center;justify-content:center;gap:9px;border:0;border-radius:15px;background:linear-gradient(135deg,#7c3aed,#a855f7);color:white;padding:12px 17px;font-weight:900;cursor:pointer;box-shadow:0 15px 42px rgba(124,58,237,.25);transition:transform .16s ease,filter .16s ease}.btn:hover,button:hover{transform:translateY(-1px);filter:brightness(1.1)}.btn.secondary{background:rgba(255,255,255,.08);box-shadow:none;border:1px solid var(--line)}.muted{color:var(--muted);line-height:1.62}.pill{display:inline-flex;align-items:center;gap:8px;padding:8px 11px;border-radius:999px;background:rgba(34,197,94,.11);color:#bbf7d0;border:1px solid rgba(34,197,94,.22);font-size:13px;font-weight:800}code{display:inline-block;max-width:100%;overflow:auto;padding:11px 13px;border-radius:14px;border:1px solid var(--line);background:rgba(0,0,0,.32);color:#ddd6fe}label{display:block;color:rgba(255,255,255,.82);font-size:13px;font-weight:850;letter-spacing:.01em}input,select,textarea{width:100%;margin:8px 0 16px;padding:13px 14px;border-radius:15px;border:1px solid rgba(255,255,255,.13);background:#11111c;color:#f8fafc;outline:none;box-shadow:inset 0 0 0 9999px rgba(255,255,255,.015)}input:focus,select:focus,textarea:focus{border-color:rgba(192,132,252,.7);box-shadow:0 0 0 4px rgba(124,58,237,.16)}textarea{min-height:140px;resize:vertical;line-height:1.5}select{appearance:none;background-color:#11111c;background-image:linear-gradient(45deg,transparent 50%,#c4b5fd 50%),linear-gradient(135deg,#c4b5fd 50%,transparent 50%);background-position:calc(100% - 18px) 52%,calc(100% - 12px) 52%;background-size:6px 6px,6px 6px;background-repeat:no-repeat;padding-right:38px}select option{background:#0f0f1a;color:#f8fafc}select option:hover,select option:checked{background:#7c3aed;color:#fff}.row{display:grid;grid-template-columns:1fr 1fr;gap:16px}.form-section{margin-top:16px;padding-top:16px;border-top:1px solid var(--line)}.savebar{position:sticky;bottom:14px;display:flex;justify-content:flex-end;margin-top:8px;padding:12px;border:1px solid var(--line);border-radius:20px;background:rgba(7,7,13,.78);backdrop-filter:blur(18px)}.preview-box{border:1px solid var(--line);border-left:4px solid var(--purple);border-radius:18px;background:rgba(0,0,0,.22);padding:18px;margin-top:8px}.preview-title{font-weight:950;font-size:20px;letter-spacing:-.025em}.preview-desc{white-space:pre-wrap;color:rgba(255,255,255,.78);line-height:1.55;margin-top:8px}.preview-footer{color:rgba(255,255,255,.48);font-size:12px;margin-top:14px}.preview-img{max-width:100%;border-radius:16px;margin-top:14px;border:1px solid var(--line)}.toolbar{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}@media(max-width:760px){.row{grid-template-columns:1fr}.nav{position:relative;top:0;align-items:flex-start;gap:12px;flex-direction:column}.navlinks{flex-wrap:wrap}.hero{padding:24px}h1{font-size:38px}}
     </style>
     """
     html_doc = f"<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>{html.escape(title)}</title>{css}</head><body><main class='wrap'><nav class='nav'><div class='brand'>moealturej bot</div><div class='navlinks'><a href='/'>Dashboard</a><a href='/health'>Health</a><a href='/logout'>Logout</a></div></nav>{body}</main></body></html>"
@@ -605,6 +623,11 @@ async def guild_page(request: web.Request) -> web.Response:
       <div class='form-section'><h2>Tickets</h2><div class='row'><label>Ticket category<select name='ticket_category'>{options(categories, config.get('ticket_category'))}</select></label><label>Ticket transcript logs<select name='ticket_log_channel'>{options(text_channels, config.get('ticket_log_channel'))}</select></label></div><div class='row'><label>General support role<select name='ticket_role_general'>{options(roles, config.get('ticket_role_general'))}</select></label><label>HWID support role<select name='ticket_role_hwid'>{options(roles, config.get('ticket_role_hwid'))}</select></label></div><label>Key-not-received support role<select name='ticket_role_key_not_received'>{options(roles, config.get('ticket_role_key_not_received'))}</select></label></div>
       <div class='savebar'><button type='submit'>Save dashboard settings</button></div>
     </form>
+    <div class='section-title'><h2>Send messages</h2><span class='muted'>Owner dashboard tools</span></div>
+    <div class='grid'>
+      <section class='card'><h2>📣 Announcement sender</h2><p class='muted'>Create a polished announcement embed with live preview and send it to any text channel.</p><a class='btn' href='/guild/{guild_id}/announcements'>Open announcement sender</a></section>
+      <section class='card'><h2>✨ Embed sender</h2><p class='muted'>Build a custom embed with title, message, color, image, footer, and preview before sending.</p><a class='btn' href='/guild/{guild_id}/embeds'>Open embed sender</a></section>
+    </div>
     <div class='section-title'><h2>Setup links</h2></div><section class='card'><p class='muted'>OAuth verification URL:</p><code>{PUBLIC_BASE_URL}/verify/start?guild_id={guild_id}</code></section>
     """
     return page(guild.name, body)
@@ -638,14 +661,148 @@ async def guild_save(request: web.Request) -> web.Response:
     await set_config(guild_id, updates)
     raise web.HTTPFound(f"/guild/{guild_id}")
 
+def parse_embed_color(value: str) -> int:
+    value = (value or "").strip().replace("#", "")
+    if not value:
+        return EMBED_COLOR
+    try:
+        return int(value, 16) & 0xFFFFFF
+    except ValueError:
+        return EMBED_COLOR
+
+
+def channel_options(guild: discord.Guild, selected: Optional[int] = None) -> str:
+    out = ["<option value=''>Select a channel</option>"]
+    for channel in guild.text_channels:
+        sel = "selected" if selected and int(selected) == channel.id else ""
+        out.append(f"<option value='{channel.id}' {sel}>#{html.escape(channel.name)}</option>")
+    return "".join(out)
+
+
+def composer_page(guild: discord.Guild, mode: str, sent: bool = False) -> web.Response:
+    is_announcement = mode == "announcement"
+    title = "Announcement Sender" if is_announcement else "Embed Sender"
+    defaults = {
+        "title": "New Announcement" if is_announcement else "Embed Title",
+        "message": "Write your announcement here..." if is_announcement else "Write your embed description here...",
+        "footer": "moealturej",
+        "color": "7C3AED",
+    }
+    body = f"""
+    <section class='hero'><span class='pill'>{'📣 Announcement' if is_announcement else '✨ Embed'} composer</span><h1>{title}</h1><p class='muted'>Build a clean Discord {'announcement' if is_announcement else 'embed'} with a live preview, then send it straight to a selected channel.</p></section>
+    {'<section class="card" style="margin-top:16px"><span class="pill">✅ Sent successfully</span><p class="muted">Your message was sent to Discord.</p></section>' if sent else ''}
+    <div class='section-title'><h2>Compose</h2><a class='btn secondary' href='/guild/{guild.id}'>Back to settings</a></div>
+    <form class='grid' method='post'>
+      <section class='card'>
+        <label>Send to channel<select name='channel_id' required>{channel_options(guild)}</select></label>
+        <label>Title<input id='titleInput' name='title' maxlength='256' value='{html.escape(defaults['title'])}'></label>
+        <label>Message<textarea id='messageInput' name='message' required>{html.escape(defaults['message'])}</textarea></label>
+        <div class='row'><label>Color hex<input id='colorInput' name='color' value='{defaults['color']}' placeholder='7C3AED'></label><label>Footer<input id='footerInput' name='footer' value='{html.escape(defaults['footer'])}'></label></div>
+        <label>Image URL optional<input id='imageInput' name='image_url' placeholder='https://...'></label>
+        <div class='toolbar'><button type='submit'>{'Send announcement' if is_announcement else 'Send embed'}</button><a class='btn secondary' href='/guild/{guild.id}'>Cancel</a></div>
+      </section>
+      <section class='card'>
+        <h2>Live Preview</h2>
+        <p class='muted'>This is a close dashboard preview of what Discord will receive.</p>
+        <div class='preview-box' id='previewBox'>
+          <div class='preview-title' id='previewTitle'></div>
+          <div class='preview-desc' id='previewDesc'></div>
+          <img class='preview-img' id='previewImg' style='display:none'>
+          <div class='preview-footer' id='previewFooter'></div>
+        </div>
+      </section>
+    </form>
+    <script>
+    const titleInput=document.getElementById('titleInput'), messageInput=document.getElementById('messageInput'), colorInput=document.getElementById('colorInput'), footerInput=document.getElementById('footerInput'), imageInput=document.getElementById('imageInput');
+    const box=document.getElementById('previewBox'), pTitle=document.getElementById('previewTitle'), pDesc=document.getElementById('previewDesc'), pFooter=document.getElementById('previewFooter'), pImg=document.getElementById('previewImg');
+    function cleanHex(v){{v=(v||'7C3AED').replace('#','').trim(); return /^[0-9a-fA-F]{{6}}$/.test(v)?v:'7C3AED'}}
+    function updatePreview(){{pTitle.textContent=titleInput.value||'Untitled'; pDesc.textContent=messageInput.value||''; pFooter.textContent=footerInput.value||''; box.style.borderLeftColor='#'+cleanHex(colorInput.value); const img=imageInput.value.trim(); if(img){{pImg.src=img; pImg.style.display='block'}}else{{pImg.style.display='none'}}}}
+    [titleInput,messageInput,colorInput,footerInput,imageInput].forEach(el=>el.addEventListener('input',updatePreview)); updatePreview();
+    </script>
+    """
+    return page(title, body)
+
+
+async def announcement_page(request: web.Request) -> web.Response:
+    user = await get_dashboard_user(request)
+    guild_id = int(request.match_info["guild_id"])
+    if not user or not await dashboard_can_access(user, guild_id):
+        raise web.HTTPForbidden(text=owner_private_message())
+    guild = bot.get_guild(guild_id)
+    if not guild:
+        return page("Missing server", "<section class='card'><h1>Bot is not in this server</h1></section>")
+    return composer_page(guild, "announcement", request.query.get("sent") == "1")
+
+
+async def embed_page(request: web.Request) -> web.Response:
+    user = await get_dashboard_user(request)
+    guild_id = int(request.match_info["guild_id"])
+    if not user or not await dashboard_can_access(user, guild_id):
+        raise web.HTTPForbidden(text=owner_private_message())
+    guild = bot.get_guild(guild_id)
+    if not guild:
+        return page("Missing server", "<section class='card'><h1>Bot is not in this server</h1></section>")
+    return composer_page(guild, "embed", request.query.get("sent") == "1")
+
+
+async def send_composer(request: web.Request, mode: str) -> web.Response:
+    user = await get_dashboard_user(request)
+    guild_id = int(request.match_info["guild_id"])
+    if not user or not await dashboard_can_access(user, guild_id):
+        raise web.HTTPForbidden(text=owner_private_message())
+    guild = bot.get_guild(guild_id)
+    if not guild:
+        return page("Missing server", "<section class='card'><h1>Bot is not in this server</h1></section>")
+    data = await request.post()
+    channel_id = int(str(data.get("channel_id", "0")) or 0)
+    channel = guild.get_channel(channel_id)
+    if not isinstance(channel, discord.TextChannel):
+        return page("Invalid channel", "<section class='card'><h1>Invalid channel</h1><p class='muted'>Choose a text channel the bot can send messages in.</p></section>")
+    title = str(data.get("title") or ("Announcement" if mode == "announcement" else "Embed"))[:256]
+    message = str(data.get("message") or "").strip()[:4000]
+    footer = str(data.get("footer") or "moealturej")[:2048]
+    image_url = str(data.get("image_url") or "").strip()
+    color = parse_embed_color(str(data.get("color") or ""))
+    embed = make_embed(title, message, color)
+    if image_url:
+        embed.set_image(url=image_url)
+    if footer:
+        embed.set_footer(text=footer)
+    await channel.send(embed=embed)
+    await save_event("dashboard_events", {"guild_id": guild.id, "user_id": int(user["user_id"]), "event": f"send_{mode}", "channel_id": channel.id, "title": title})
+    raise web.HTTPFound(f"/guild/{guild.id}/{'announcements' if mode == 'announcement' else 'embeds'}?sent=1")
+
+
+async def announcement_send(request: web.Request) -> web.Response:
+    return await send_composer(request, "announcement")
+
+
+async def embed_send(request: web.Request) -> web.Response:
+    return await send_composer(request, "embed")
+
 
 async def verify_start(request: web.Request) -> web.Response:
     guild_id = int(request.query.get("guild_id", "0"))
+    requested_user_id = int(request.query.get("user_id", "0") or 0)
     guild = bot.get_guild(guild_id)
     if not guild:
         return page("Verification", "<section class='card'><h1>Server not found</h1><p class='muted'>The bot is not in this server.</p></section>")
+    if not requested_user_id:
+        return page("Verification", f"<section class='hero'><span class='pill'>🔐 Secure verification</span><h1>Use the server verify button</h1><p class='muted'>For safety, verification links are generated privately after the bot checks your roles inside {html.escape(guild.name)}. Go back to Discord and click the verify button again.</p></section>")
+
+    # Extra web-side guard. The main no-link check happens in the Discord button interaction,
+    # but this prevents old/copied links from making already-verified members authorize again.
+    if requested_user_id:
+        config = await get_guild_config(guild_id)
+        member = guild.get_member(requested_user_id)
+        verified_role = guild.get_role(int(config.get("verified_role") or 0)) if config.get("verified_role") else None
+        if member and verified_role and verified_role in member.roles:
+            removed = await safe_remove_role(member, config.get("unverified_role"), "Already verified cleanup from web guard")
+            await log_verification(guild, member, "web-precheck", "already_verified", "OAuth start blocked because member already had verified role." + (" Unverified role removed." if removed else ""))
+            return page("Already verified", f"<section class='hero'><span class='pill'>✅ Already verified</span><h1>No action needed</h1><p class='muted'>You are already verified in {html.escape(guild.name)}. You can close this page.</p></section>")
+
     state = secrets.token_urlsafe(32)
-    await mdb.oauth_states.insert_one({"state": state, "type": "verify", "guild_id": guild_id, "expires_at": utcnow() + timedelta(minutes=10)})
+    await mdb.oauth_states.insert_one({"state": state, "type": "verify", "guild_id": guild_id, "requested_user_id": requested_user_id, "expires_at": utcnow() + timedelta(minutes=10)})
     params = {
         "client_id": DISCORD_CLIENT_ID,
         "redirect_uri": f"{PUBLIC_BASE_URL}/verify/callback",
@@ -712,6 +869,10 @@ async def start_web() -> None:
     app.router.add_get("/logout", logout)
     app.router.add_get("/guild/{guild_id}", guild_page)
     app.router.add_post("/guild/{guild_id}", guild_save)
+    app.router.add_get("/guild/{guild_id}/announcements", announcement_page)
+    app.router.add_post("/guild/{guild_id}/announcements", announcement_send)
+    app.router.add_get("/guild/{guild_id}/embeds", embed_page)
+    app.router.add_post("/guild/{guild_id}/embeds", embed_send)
     app.router.add_get("/verify/start", verify_start)
     app.router.add_get("/verify/callback", verify_callback)
     app.router.add_get("/health", health)
@@ -733,6 +894,7 @@ async def setup_hook():
 async def on_ready():
     bot.add_view(TicketPanelView())
     bot.add_view(CloseTicketView())
+    bot.add_view(OAuthVerifyView(0))
     try:
         synced = await bot.tree.sync()
         print(f"Synced {len(synced)} slash commands.")
