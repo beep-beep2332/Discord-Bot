@@ -72,6 +72,7 @@ TICKET_TYPES = {
 DEFAULT_GUILD_CONFIG: Dict[str, Any] = {
     "enabled": False,
     "verified_role": None,
+    "unverified_role": None,
     "auto_role": None,
     "bot_admin_role": None,
     "welcome_channel": None,
@@ -306,8 +307,23 @@ async def safe_add_role(member: discord.Member, role_id: Optional[int], reason: 
     role = member.guild.get_role(int(role_id))
     if not role:
         return False
+    if role in member.roles:
+        return True
     try:
         await member.add_roles(role, reason=reason)
+        return True
+    except discord.Forbidden:
+        return False
+
+
+async def safe_remove_role(member: discord.Member, role_id: Optional[int], reason: str) -> bool:
+    if not role_id:
+        return False
+    role = member.guild.get_role(int(role_id))
+    if not role or role not in member.roles:
+        return False
+    try:
+        await member.remove_roles(role, reason=reason)
         return True
     except discord.Forbidden:
         return False
@@ -492,16 +508,18 @@ class CloseTicketView(discord.ui.View):
 def page(title: str, body: str) -> web.Response:
     css = """
     <style>
-    :root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#050509;color:#fff;font-family:Inter,Arial,sans-serif}a{color:#c4b5fd;text-decoration:none}.wrap{width:min(1100px,calc(100% - 28px));margin:auto;padding:38px 0}.nav{display:flex;justify-content:space-between;align-items:center;padding:18px 0}.brand{font-weight:900;letter-spacing:-.04em}.card,.guild{border:1px solid rgba(255,255,255,.1);background:linear-gradient(145deg,rgba(124,58,237,.13),rgba(255,255,255,.035));border-radius:22px;padding:22px;box-shadow:0 24px 90px rgba(0,0,0,.3)}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px}.btn,button{display:inline-flex;align-items:center;justify-content:center;border:0;border-radius:14px;background:#7c3aed;color:white;padding:12px 16px;font-weight:800;cursor:pointer}.muted{color:rgba(255,255,255,.66);line-height:1.6}input,select{width:100%;margin:6px 0 14px;padding:12px 14px;border-radius:14px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.06);color:#fff}.row{display:grid;grid-template-columns:1fr 1fr;gap:14px}@media(max-width:700px){.row{grid-template-columns:1fr}.nav{align-items:flex-start;gap:12px;flex-direction:column}}</style>
+    :root{color-scheme:dark;--bg:#050509;--panel:rgba(15,15,26,.78);--panel2:rgba(124,58,237,.12);--line:rgba(255,255,255,.105);--text:#fff;--muted:rgba(255,255,255,.66);--purple:#8b5cf6;--purple2:#c084fc;--green:#22c55e;--blue:#38bdf8;--danger:#fb7185}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;min-height:100vh;background:radial-gradient(circle at top left,rgba(124,58,237,.24),transparent 34rem),radial-gradient(circle at 80% 12%,rgba(56,189,248,.12),transparent 28rem),linear-gradient(180deg,#06060b,#030306 70%);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;overflow-x:hidden}body:before{content:"";position:fixed;inset:0;pointer-events:none;background-image:linear-gradient(rgba(255,255,255,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.035) 1px,transparent 1px);background-size:64px 64px;mask-image:linear-gradient(to bottom,black,transparent 78%)}a{color:#ddd6fe;text-decoration:none}.wrap{width:min(1180px,calc(100% - 30px));margin:auto;padding:28px 0 54px}.nav{position:sticky;top:14px;z-index:10;display:flex;justify-content:space-between;align-items:center;margin-bottom:26px;padding:12px 14px;border:1px solid var(--line);border-radius:22px;background:rgba(7,7,13,.72);backdrop-filter:blur(18px);box-shadow:0 20px 80px rgba(0,0,0,.32)}.brand{display:flex;align-items:center;gap:10px;font-weight:950;letter-spacing:-.045em}.brand:before{content:"✦";display:grid;place-items:center;width:34px;height:34px;border-radius:12px;background:linear-gradient(135deg,var(--purple),var(--blue));box-shadow:0 12px 40px rgba(139,92,246,.42)}.navlinks{display:flex;align-items:center;gap:10px}.navlinks a{padding:9px 12px;border-radius:12px;color:rgba(255,255,255,.76)}.navlinks a:hover{background:rgba(255,255,255,.07);color:#fff}.hero{position:relative;overflow:hidden;border:1px solid var(--line);border-radius:30px;padding:34px;background:linear-gradient(145deg,rgba(139,92,246,.22),rgba(56,189,248,.07) 45%,rgba(255,255,255,.035));box-shadow:0 28px 100px rgba(0,0,0,.38)}.hero:after{content:"";position:absolute;right:-90px;top:-90px;width:260px;height:260px;background:radial-gradient(circle,rgba(192,132,252,.32),transparent 68%)}h1{font-size:clamp(32px,5vw,62px);letter-spacing:-.065em;line-height:.94;margin:0 0 12px}h2{letter-spacing:-.035em;margin:0 0 12px}h3{letter-spacing:-.025em;margin:0 0 10px}.card,.guild,.panel{position:relative;border:1px solid var(--line);background:linear-gradient(145deg,var(--panel),rgba(255,255,255,.035));border-radius:24px;padding:22px;box-shadow:0 24px 90px rgba(0,0,0,.26);backdrop-filter:blur(18px)}.guild{transition:transform .18s ease,border-color .18s ease,background .18s ease}.guild:hover{transform:translateY(-3px);border-color:rgba(192,132,252,.38);background:linear-gradient(145deg,rgba(124,58,237,.18),rgba(255,255,255,.045))}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:15px}.section-title{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;margin:28px 0 12px}.btn,button{display:inline-flex;align-items:center;justify-content:center;gap:9px;border:0;border-radius:15px;background:linear-gradient(135deg,#7c3aed,#a855f7);color:white;padding:12px 17px;font-weight:900;cursor:pointer;box-shadow:0 15px 42px rgba(124,58,237,.25);transition:transform .16s ease,filter .16s ease}.btn:hover,button:hover{transform:translateY(-1px);filter:brightness(1.1)}.btn.secondary{background:rgba(255,255,255,.08);box-shadow:none;border:1px solid var(--line)}.muted{color:var(--muted);line-height:1.62}.pill{display:inline-flex;align-items:center;gap:8px;padding:8px 11px;border-radius:999px;background:rgba(34,197,94,.11);color:#bbf7d0;border:1px solid rgba(34,197,94,.22);font-size:13px;font-weight:800}code{display:inline-block;max-width:100%;overflow:auto;padding:11px 13px;border-radius:14px;border:1px solid var(--line);background:rgba(0,0,0,.32);color:#ddd6fe}label{display:block;color:rgba(255,255,255,.82);font-size:13px;font-weight:850;letter-spacing:.01em}input,select{width:100%;margin:8px 0 16px;padding:13px 14px;border-radius:15px;border:1px solid rgba(255,255,255,.13);background:#11111c;color:#f8fafc;outline:none;box-shadow:inset 0 0 0 9999px rgba(255,255,255,.015)}input:focus,select:focus{border-color:rgba(192,132,252,.7);box-shadow:0 0 0 4px rgba(124,58,237,.16)}select{appearance:none;background-color:#11111c;background-image:linear-gradient(45deg,transparent 50%,#c4b5fd 50%),linear-gradient(135deg,#c4b5fd 50%,transparent 50%);background-position:calc(100% - 18px) 52%,calc(100% - 12px) 52%;background-size:6px 6px,6px 6px;background-repeat:no-repeat;padding-right:38px}select option{background:#0f0f1a;color:#f8fafc}select option:hover,select option:checked{background:#7c3aed;color:#fff}.row{display:grid;grid-template-columns:1fr 1fr;gap:16px}.form-section{margin-top:16px;padding-top:16px;border-top:1px solid var(--line)}.savebar{position:sticky;bottom:14px;display:flex;justify-content:flex-end;margin-top:8px;padding:12px;border:1px solid var(--line);border-radius:20px;background:rgba(7,7,13,.78);backdrop-filter:blur(18px)}@media(max-width:760px){.row{grid-template-columns:1fr}.nav{position:relative;top:0;align-items:flex-start;gap:12px;flex-direction:column}.navlinks{flex-wrap:wrap}.hero{padding:24px}h1{font-size:38px}}
+    </style>
     """
-    html_doc = f"<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>{html.escape(title)}</title>{css}</head><body><main class='wrap'><nav class='nav'><div class='brand'>moealturej bot</div><div><a href='/'>Dashboard</a> · <a href='/health'>Health</a> · <a href='/logout'>Logout</a></div></nav>{body}</main></body></html>"
+    html_doc = f"<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>{html.escape(title)}</title>{css}</head><body><main class='wrap'><nav class='nav'><div class='brand'>moealturej bot</div><div class='navlinks'><a href='/'>Dashboard</a><a href='/health'>Health</a><a href='/logout'>Logout</a></div></nav>{body}</main></body></html>"
     return web.Response(text=html_doc, content_type="text/html")
 
 
 async def home(request: web.Request) -> web.Response:
     user = await get_dashboard_user(request)
     if not user:
-        body = f"<section class='card'><h1>Private Discord bot dashboard</h1><p class='muted'>Login with Discord to manage approved servers. This bot is not for public use.</p><a class='btn' href='/login'>Login with Discord</a><p class='muted'>{html.escape(OWNER_CONTACT)}</p></section>"
+        body = f"<section class='hero'><span class='pill'>🔒 Private control panel</span><h1>Private Discord bot dashboard</h1><p class='muted'>Login with Discord to manage approved servers, verification, tickets, transcripts, logs, and live stats.</p><a class='btn' href='/login'>Login with Discord</a><p class='muted'>{html.escape(OWNER_CONTACT)}</p></section>"
         return page("Dashboard", body)
     if not is_owner_user(int(user["user_id"])):
         return page("Not public", f"<section class='card'><h1>Not available publicly</h1><p class='muted'>{html.escape(owner_private_message())}</p></section>")
@@ -512,8 +530,8 @@ async def home(request: web.Request) -> web.Response:
     for g in guilds:
         if int(g["id"]) in bot_guild_ids and guild_manageable(g):
             icon = "🟢" if int(g["id"]) in bot_guild_ids else "⚪"
-            cards.append(f"<div class='guild'><h3>{icon} {html.escape(g['name'])}</h3><p class='muted'>Server ID: {g['id']}</p><a class='btn' href='/guild/{g['id']}'>Manage</a></div>")
-    body = f"<h1>Welcome, {html.escape(user.get('username','owner'))}</h1><p class='muted'>Only your Discord account ID <code>{OWNER_USER_ID}</code> can access full dashboard controls.</p><div class='grid'>{''.join(cards) or '<div class=card>No manageable bot servers found.</div>'}</div>"
+            cards.append(f"<div class='guild'><span class='pill'>{icon} Connected</span><h3>{html.escape(g['name'])}</h3><p class='muted'>Server ID: {g['id']}</p><a class='btn' href='/guild/{g['id']}'>Manage server</a></div>")
+    body = f"<section class='hero'><span class='pill'>✅ Owner verified</span><h1>Welcome, {html.escape(user.get('username','owner'))}</h1><p class='muted'>Only Discord account ID <code>{OWNER_USER_ID}</code> can access full dashboard controls.</p></section><div class='section-title'><h2>Your servers</h2><span class='muted'>MongoDB synced</span></div><div class='grid'>{''.join(cards) or '<div class=card>No manageable bot servers found.</div>'}</div>"
     return page("Dashboard", body)
 
 
@@ -578,18 +596,16 @@ async def guild_page(request: web.Request) -> web.Response:
     text_channels = guild.text_channels
     categories = guild.categories
     body = f"""
-    <section class='card'><h1>{html.escape(guild.name)}</h1><p class='muted'>MongoDB-backed controls for verification, tickets, logs, stats, store, and access.</p></section><br>
+    <section class='hero'><span class='pill'>⚙️ Server controls</span><h1>{html.escape(guild.name)}</h1><p class='muted'>Manage verification, unverified role cleanup, tickets, transcripts, logs, stats, store links, and admin access from one clean MongoDB-backed panel.</p></section>
+    <div class='section-title'><h2>Core settings</h2><span class='muted'>Saved per server</span></div>
     <form class='card' method='post'>
-      <div class='row'><label>Enabled<select name='enabled'><option value='true' {'selected' if config.get('enabled') else ''}>Enabled</option><option value='false' {'selected' if not config.get('enabled') else ''}>Disabled/private</option></select></label><label>Store URL<input name='store_url' value='{html.escape(config.get('store_url') or DEFAULT_STORE_URL)}'></label></div>
-      <div class='row'><label>Verified role<select name='verified_role'>{options(roles, config.get('verified_role'))}</select></label><label>Auto role<select name='auto_role'>{options(roles, config.get('auto_role'))}</select></label></div>
-      <div class='row'><label>Bot admin role<select name='bot_admin_role'>{options(roles, config.get('bot_admin_role'))}</select></label><label>Welcome channel<select name='welcome_channel'>{options(text_channels, config.get('welcome_channel'))}</select></label></div>
-      <div class='row'><label>Verification channel<select name='verification_channel'>{options(text_channels, config.get('verification_channel'))}</select></label><label>Verification logs<select name='verification_log_channel'>{options(text_channels, config.get('verification_log_channel'))}</select></label></div>
-      <div class='row'><label>Ticket category<select name='ticket_category'>{options(categories, config.get('ticket_category'))}</select></label><label>Ticket transcript logs<select name='ticket_log_channel'>{options(text_channels, config.get('ticket_log_channel'))}</select></label></div>
-      <div class='row'><label>General support role<select name='ticket_role_general'>{options(roles, config.get('ticket_role_general'))}</select></label><label>HWID support role<select name='ticket_role_hwid'>{options(roles, config.get('ticket_role_hwid'))}</select></label></div>
-      <label>Key-not-received support role<select name='ticket_role_key_not_received'>{options(roles, config.get('ticket_role_key_not_received'))}</select></label>
-      <button type='submit'>Save settings</button>
+      <div class='row'><label>Bot availability<select name='enabled'><option value='true' {'selected' if config.get('enabled') else ''}>Enabled for this server</option><option value='false' {'selected' if not config.get('enabled') else ''}>Disabled / private only</option></select></label><label>Store URL<input name='store_url' value='{html.escape(config.get('store_url') or DEFAULT_STORE_URL)}' placeholder='https://your-store.com'></label></div>
+      <div class='form-section'><h2>Verification</h2><p class='muted'>If a member already has the verified role, the bot now skips re-verifying and still removes the unverified role if configured.</p><div class='row'><label>Verified role<select name='verified_role'>{options(roles, config.get('verified_role'))}</select></label><label>Unverified role to remove<select name='unverified_role'>{options(roles, config.get('unverified_role'))}</select></label></div><div class='row'><label>Auto role on join<select name='auto_role'>{options(roles, config.get('auto_role'))}</select></label><label>Verification logs<select name='verification_log_channel'>{options(text_channels, config.get('verification_log_channel'))}</select></label></div><label>Verification panel channel<select name='verification_channel'>{options(text_channels, config.get('verification_channel'))}</select></label></div>
+      <div class='form-section'><h2>Dashboard and access</h2><div class='row'><label>Bot admin role<select name='bot_admin_role'>{options(roles, config.get('bot_admin_role'))}</select></label><label>Welcome channel<select name='welcome_channel'>{options(text_channels, config.get('welcome_channel'))}</select></label></div></div>
+      <div class='form-section'><h2>Tickets</h2><div class='row'><label>Ticket category<select name='ticket_category'>{options(categories, config.get('ticket_category'))}</select></label><label>Ticket transcript logs<select name='ticket_log_channel'>{options(text_channels, config.get('ticket_log_channel'))}</select></label></div><div class='row'><label>General support role<select name='ticket_role_general'>{options(roles, config.get('ticket_role_general'))}</select></label><label>HWID support role<select name='ticket_role_hwid'>{options(roles, config.get('ticket_role_hwid'))}</select></label></div><label>Key-not-received support role<select name='ticket_role_key_not_received'>{options(roles, config.get('ticket_role_key_not_received'))}</select></label></div>
+      <div class='savebar'><button type='submit'>Save dashboard settings</button></div>
     </form>
-    <br><section class='card'><h2>Setup links</h2><p class='muted'>OAuth verification URL:</p><code>{PUBLIC_BASE_URL}/verify/start?guild_id={guild_id}</code></section>
+    <div class='section-title'><h2>Setup links</h2></div><section class='card'><p class='muted'>OAuth verification URL:</p><code>{PUBLIC_BASE_URL}/verify/start?guild_id={guild_id}</code></section>
     """
     return page(guild.name, body)
 
@@ -607,6 +623,7 @@ async def guild_save(request: web.Request) -> web.Response:
         "enabled": str(data.get("enabled")) == "true",
         "store_url": str(data.get("store_url") or DEFAULT_STORE_URL).strip(),
         "verified_role": as_int("verified_role"),
+        "unverified_role": as_int("unverified_role"),
         "auto_role": as_int("auto_role"),
         "bot_admin_role": as_int("bot_admin_role"),
         "welcome_channel": as_int("welcome_channel"),
@@ -658,10 +675,25 @@ async def verify_callback(request: web.Request) -> web.Response:
     await discord_put(f"/guilds/{guild_id}/members/{user_id}", BOT_TOKEN, {"access_token": token["access_token"]})
     await asyncio.sleep(1)
     member = guild.get_member(user_id) or await guild.fetch_member(user_id)
-    role_ok = await safe_add_role(member, config.get("verified_role"), "User completed OAuth2 verification")
+
+    verified_role_id = config.get("verified_role")
+    verified_role = guild.get_role(int(verified_role_id or 0)) if verified_role_id else None
+    already_verified = bool(verified_role and verified_role in member.roles)
+
+    if already_verified:
+        role_ok = True
+        details = "OAuth authorized. User already had the verified role."
+    else:
+        role_ok = await safe_add_role(member, verified_role_id, "User completed OAuth2 verification")
+        details = "OAuth authorized. Verified role assigned." if role_ok else "OAuth authorized, but verified role was not assigned. Check role position/config."
+
+    removed_unverified = await safe_remove_role(member, config.get("unverified_role"), "User completed OAuth2 verification")
+    if removed_unverified:
+        details += " Unverified role removed."
+
     await send_verified_dm(member, config.get("store_url", DEFAULT_STORE_URL))
-    await log_verification(guild, member, "oauth2", "success" if role_ok else "success", "OAuth authorized. Role assigned." if role_ok else "OAuth authorized, but verified role was not assigned. Check role position/config.")
-    return page("Verified", f"<section class='card'><h1>Verified</h1><p class='muted'>You are verified in {html.escape(guild.name)}. You can close this page.</p></section>")
+    await log_verification(guild, member, "oauth2", "success" if role_ok else "failed", details)
+    return page("Verified", f"<section class='hero'><span class='pill'>✅ Verified</span><h1>{'Already verified' if already_verified else 'Verified'}</h1><p class='muted'>You are verified in {html.escape(guild.name)}. You can close this page.</p></section>")
 
 
 async def health(request: web.Request) -> web.Response:
@@ -715,6 +747,9 @@ async def on_ready():
 @bot.event
 async def on_member_join(member: discord.Member):
     config = await get_guild_config(member.guild.id)
+    verified_role = member.guild.get_role(int(config.get("verified_role") or 0)) if config.get("verified_role") else None
+    if config.get("unverified_role") and not (verified_role and verified_role in member.roles):
+        await safe_add_role(member, config.get("unverified_role"), "Unverified role on join")
     if config.get("auto_role"):
         await safe_add_role(member, config.get("auto_role"), "Auto role on join")
     channel = member.guild.get_channel(config.get("welcome_channel") or 0)
@@ -786,7 +821,7 @@ async def help_command(interaction: discord.Interaction):
 @admin_only()
 async def commands_menu(interaction: discord.Interaction):
     embed = make_embed("Admin Commands", "Private setup commands for this bot.")
-    embed.add_field(name="Setup", value="`/setup_enable` `/set_admin_role` `/set_verified_role` `/set_auto_role` `/set_logs` `/set_ticket_category` `/set_ticket_role` `/stats_setup`", inline=False)
+    embed.add_field(name="Setup", value="`/setup_enable` `/set_admin_role` `/set_verified_role` `/set_unverified_role` `/set_auto_role` `/set_logs` `/set_ticket_category` `/set_ticket_role` `/stats_setup`", inline=False)
     embed.add_field(name="Panels", value="`/send_verification_panel` `/send_ticket_panel`", inline=False)
     embed.add_field(name="Content", value="`/set_store` `/announce` `/config_show`", inline=False)
     embed.add_field(name="Dashboard", value=f"{PUBLIC_BASE_URL}/", inline=False)
@@ -814,6 +849,13 @@ async def set_admin_role(interaction: discord.Interaction, role: discord.Role):
 async def set_verified_role(interaction: discord.Interaction, role: discord.Role):
     await set_config(interaction.guild.id, {"verified_role": role.id})
     await interaction.response.send_message(f"Verified role set to {role.mention}.", ephemeral=True)
+
+
+@bot.tree.command(name="set_unverified_role", description="Set the role removed after successful verification.")
+@admin_only()
+async def set_unverified_role(interaction: discord.Interaction, role: discord.Role):
+    await set_config(interaction.guild.id, {"unverified_role": role.id})
+    await interaction.response.send_message(f"Unverified role set to {role.mention}. It will be removed after verification.", ephemeral=True)
 
 
 @bot.tree.command(name="set_auto_role", description="Set the role automatically given when a member joins.")
@@ -912,7 +954,7 @@ async def stats_setup(interaction: discord.Interaction, category: Optional[disco
 async def config_show(interaction: discord.Interaction):
     config = await get_guild_config(interaction.guild.id)
     embed = make_embed("Server Config", "Current MongoDB settings.")
-    for key in ["enabled", "verified_role", "auto_role", "bot_admin_role", "verification_log_channel", "ticket_log_channel", "ticket_category", "store_url"]:
+    for key in ["enabled", "verified_role", "unverified_role", "auto_role", "bot_admin_role", "verification_log_channel", "ticket_log_channel", "ticket_category", "store_url"]:
         embed.add_field(name=key, value=str(config.get(key)), inline=True)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
