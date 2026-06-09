@@ -526,13 +526,12 @@ class CloseTicketView(discord.ui.View):
 def page(title: str, body: str) -> web.Response:
     css = """
     <style>
-    :root{color-scheme:dark;--bg:#050509;--panel:rgba(15,15,26,.78);--panel2:rgba(124,58,237,.12);--line:rgba(255,255,255,.105);--text:#fff;--muted:rgba(255,255,255,.66);--purple:#8b5cf6;--purple2:#c084fc;--green:#22c55e;--blue:#38bdf8;--danger:#fb7185}
-    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;min-height:100vh;background:radial-gradient(circle at top left,rgba(124,58,237,.24),transparent 34rem),radial-gradient(circle at 80% 12%,rgba(56,189,248,.12),transparent 28rem),linear-gradient(180deg,#06060b,#030306 70%);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;overflow-x:hidden}body:before{content:"";position:fixed;inset:0;pointer-events:none;background-image:linear-gradient(rgba(255,255,255,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.035) 1px,transparent 1px);background-size:64px 64px;mask-image:linear-gradient(to bottom,black,transparent 78%)}a{color:#ddd6fe;text-decoration:none}.wrap{width:min(1180px,calc(100% - 30px));margin:auto;padding:28px 0 54px}.nav{position:sticky;top:14px;z-index:10;display:flex;justify-content:space-between;align-items:center;margin-bottom:26px;padding:12px 14px;border:1px solid var(--line);border-radius:22px;background:rgba(7,7,13,.72);backdrop-filter:blur(18px);box-shadow:0 20px 80px rgba(0,0,0,.32)}.brand{display:flex;align-items:center;gap:10px;font-weight:950;letter-spacing:-.045em}.brand:before{content:"✦";display:grid;place-items:center;width:34px;height:34px;border-radius:12px;background:linear-gradient(135deg,var(--purple),var(--blue));box-shadow:0 12px 40px rgba(139,92,246,.42)}.navlinks{display:flex;align-items:center;gap:10px}.navlinks a{padding:9px 12px;border-radius:12px;color:rgba(255,255,255,.76)}.navlinks a:hover{background:rgba(255,255,255,.07);color:#fff}.hero{position:relative;overflow:hidden;border:1px solid var(--line);border-radius:30px;padding:34px;background:linear-gradient(145deg,rgba(139,92,246,.22),rgba(56,189,248,.07) 45%,rgba(255,255,255,.035));box-shadow:0 28px 100px rgba(0,0,0,.38)}.hero:after{content:"";position:absolute;right:-90px;top:-90px;width:260px;height:260px;background:radial-gradient(circle,rgba(192,132,252,.32),transparent 68%)}h1{font-size:clamp(32px,5vw,62px);letter-spacing:-.065em;line-height:.94;margin:0 0 12px}h2{letter-spacing:-.035em;margin:0 0 12px}h3{letter-spacing:-.025em;margin:0 0 10px}.card,.guild,.panel{position:relative;border:1px solid var(--line);background:linear-gradient(145deg,var(--panel),rgba(255,255,255,.035));border-radius:24px;padding:22px;box-shadow:0 24px 90px rgba(0,0,0,.26);backdrop-filter:blur(18px)}.guild{transition:transform .18s ease,border-color .18s ease,background .18s ease}.guild:hover{transform:translateY(-3px);border-color:rgba(192,132,252,.38);background:linear-gradient(145deg,rgba(124,58,237,.18),rgba(255,255,255,.045))}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:15px}.section-title{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;margin:28px 0 12px}.btn,button{display:inline-flex;align-items:center;justify-content:center;gap:9px;border:0;border-radius:15px;background:linear-gradient(135deg,#7c3aed,#a855f7);color:white;padding:12px 17px;font-weight:900;cursor:pointer;box-shadow:0 15px 42px rgba(124,58,237,.25);transition:transform .16s ease,filter .16s ease}.btn:hover,button:hover{transform:translateY(-1px);filter:brightness(1.1)}.btn.secondary{background:rgba(255,255,255,.08);box-shadow:none;border:1px solid var(--line)}.muted{color:var(--muted);line-height:1.62}.pill{display:inline-flex;align-items:center;gap:8px;padding:8px 11px;border-radius:999px;background:rgba(34,197,94,.11);color:#bbf7d0;border:1px solid rgba(34,197,94,.22);font-size:13px;font-weight:800}code{display:inline-block;max-width:100%;overflow:auto;padding:11px 13px;border-radius:14px;border:1px solid var(--line);background:rgba(0,0,0,.32);color:#ddd6fe}label{display:block;color:rgba(255,255,255,.82);font-size:13px;font-weight:850;letter-spacing:.01em}input,select,textarea{width:100%;margin:8px 0 16px;padding:13px 14px;border-radius:15px;border:1px solid rgba(255,255,255,.13);background:#11111c;color:#f8fafc;outline:none;box-shadow:inset 0 0 0 9999px rgba(255,255,255,.015)}input:focus,select:focus,textarea:focus{border-color:rgba(192,132,252,.7);box-shadow:0 0 0 4px rgba(124,58,237,.16)}textarea{min-height:140px;resize:vertical;line-height:1.5}select{appearance:none;background-color:#11111c;background-image:linear-gradient(45deg,transparent 50%,#c4b5fd 50%),linear-gradient(135deg,#c4b5fd 50%,transparent 50%);background-position:calc(100% - 18px) 52%,calc(100% - 12px) 52%;background-size:6px 6px,6px 6px;background-repeat:no-repeat;padding-right:38px}select option{background:#0f0f1a;color:#f8fafc}select option:hover,select option:checked{background:#7c3aed;color:#fff}.row{display:grid;grid-template-columns:1fr 1fr;gap:16px}.form-section{margin-top:16px;padding-top:16px;border-top:1px solid var(--line)}.savebar{position:sticky;bottom:14px;display:flex;justify-content:flex-end;margin-top:8px;padding:12px;border:1px solid var(--line);border-radius:20px;background:rgba(7,7,13,.78);backdrop-filter:blur(18px)}.preview-box{border:1px solid var(--line);border-left:4px solid var(--purple);border-radius:18px;background:rgba(0,0,0,.22);padding:18px;margin-top:8px}.preview-title{font-weight:950;font-size:20px;letter-spacing:-.025em}.preview-desc{white-space:pre-wrap;color:rgba(255,255,255,.78);line-height:1.55;margin-top:8px}.preview-footer{color:rgba(255,255,255,.48);font-size:12px;margin-top:14px}.preview-img{max-width:100%;border-radius:16px;margin-top:14px;border:1px solid var(--line)}.toolbar{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}@media(max-width:760px){.row{grid-template-columns:1fr}.nav{position:relative;top:0;align-items:flex-start;gap:12px;flex-direction:column}.navlinks{flex-wrap:wrap}.hero{padding:24px}h1{font-size:38px}}
+    :root{color-scheme:dark;--bg:#030306;--bg2:#070711;--glass:rgba(12,12,22,.74);--glass2:rgba(255,255,255,.055);--panel:rgba(14,14,25,.82);--panel2:rgba(124,58,237,.14);--line:rgba(255,255,255,.12);--line2:rgba(192,132,252,.35);--text:#f8f7ff;--muted:rgba(248,247,255,.66);--soft:rgba(248,247,255,.84);--purple:#8b5cf6;--purple2:#c084fc;--pink:#ec4899;--blue:#38bdf8;--green:#22c55e;--danger:#fb7185;--shadow:0 30px 110px rgba(0,0,0,.42)}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;min-height:100vh;background:radial-gradient(circle at 18% -10%,rgba(139,92,246,.38),transparent 34rem),radial-gradient(circle at 92% 12%,rgba(236,72,153,.18),transparent 30rem),radial-gradient(circle at 55% 96%,rgba(56,189,248,.12),transparent 32rem),linear-gradient(180deg,#05050a,#020204 68%,#05050a);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;overflow-x:hidden}body:before{content:"";position:fixed;inset:0;pointer-events:none;background-image:linear-gradient(rgba(255,255,255,.045) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.045) 1px,transparent 1px);background-size:72px 72px;mask-image:linear-gradient(to bottom,rgba(0,0,0,.9),transparent 82%);opacity:.55}body:after{content:"";position:fixed;inset:0;pointer-events:none;background:radial-gradient(circle at 50% 0,rgba(255,255,255,.08),transparent 38rem);mix-blend-mode:screen}a{color:#e9d5ff;text-decoration:none}.wrap{width:min(1220px,calc(100% - 30px));margin:auto;padding:28px 0 58px}.nav{position:sticky;top:14px;z-index:10;display:flex;justify-content:space-between;align-items:center;margin-bottom:28px;padding:12px 14px;border:1px solid var(--line);border-radius:24px;background:linear-gradient(135deg,rgba(8,8,15,.82),rgba(20,15,34,.68));backdrop-filter:blur(22px);box-shadow:0 22px 90px rgba(0,0,0,.36)}.brand{display:flex;align-items:center;gap:11px;font-weight:950;letter-spacing:-.05em}.brand:before{content:"✦";display:grid;place-items:center;width:38px;height:38px;border-radius:14px;background:linear-gradient(135deg,var(--purple),var(--pink) 55%,var(--blue));box-shadow:0 14px 50px rgba(139,92,246,.46)}.navlinks{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.navlinks a{padding:9px 12px;border-radius:14px;color:rgba(255,255,255,.74);font-weight:800;font-size:14px}.navlinks a:hover{background:rgba(255,255,255,.08);color:#fff}.hero{position:relative;overflow:hidden;border:1px solid var(--line);border-radius:34px;padding:38px;background:linear-gradient(145deg,rgba(139,92,246,.24),rgba(236,72,153,.08) 38%,rgba(56,189,248,.07) 62%,rgba(255,255,255,.04));box-shadow:var(--shadow)}.hero:before{content:"";position:absolute;inset:1px;border-radius:33px;border:1px solid rgba(255,255,255,.06);pointer-events:none}.hero:after{content:"";position:absolute;right:-100px;top:-120px;width:340px;height:340px;background:radial-gradient(circle,rgba(192,132,252,.38),transparent 68%);filter:blur(2px)}h1{font-size:clamp(34px,5.3vw,68px);letter-spacing:-.07em;line-height:.92;margin:0 0 13px;max-width:930px}h2{letter-spacing:-.04em;margin:0 0 12px;font-size:clamp(22px,2.4vw,31px)}h3{letter-spacing:-.03em;margin:0 0 10px;font-size:20px}.card,.guild,.panel{position:relative;border:1px solid var(--line);background:linear-gradient(145deg,var(--panel),rgba(255,255,255,.04));border-radius:26px;padding:23px;box-shadow:0 24px 90px rgba(0,0,0,.29);backdrop-filter:blur(20px);overflow:hidden}.card:before,.guild:before{content:"";position:absolute;inset:0;background:linear-gradient(135deg,rgba(255,255,255,.07),transparent 38%);pointer-events:none;opacity:.55}.guild{transition:transform .18s ease,border-color .18s ease,background .18s ease}.guild:hover{transform:translateY(-4px);border-color:var(--line2);background:linear-gradient(145deg,rgba(124,58,237,.2),rgba(255,255,255,.055))}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:16px}.section-title{display:flex;justify-content:space-between;align-items:flex-end;gap:16px;margin:30px 0 13px}.btn,button{display:inline-flex;align-items:center;justify-content:center;gap:9px;border:0;border-radius:16px;background:linear-gradient(135deg,#7c3aed,#a855f7 55%,#ec4899);color:white;padding:12px 17px;font-weight:950;cursor:pointer;box-shadow:0 17px 46px rgba(124,58,237,.29);transition:transform .16s ease,filter .16s ease,box-shadow .16s ease}.btn:hover,button:hover{transform:translateY(-1px);filter:brightness(1.08);box-shadow:0 22px 58px rgba(124,58,237,.34)}.btn.secondary{background:rgba(255,255,255,.075);box-shadow:none;border:1px solid var(--line)}.muted{color:var(--muted);line-height:1.66}.pill{display:inline-flex;align-items:center;gap:8px;padding:8px 12px;border-radius:999px;background:rgba(139,92,246,.14);color:#ede9fe;border:1px solid rgba(192,132,252,.28);font-size:13px;font-weight:900;box-shadow:inset 0 1px rgba(255,255,255,.08)}code{display:inline-block;max-width:100%;overflow:auto;padding:11px 13px;border-radius:15px;border:1px solid var(--line);background:rgba(0,0,0,.34);color:#ddd6fe}label{display:block;color:rgba(255,255,255,.84);font-size:13px;font-weight:900;letter-spacing:.01em}input,select,textarea{width:100%;margin:8px 0 16px;padding:14px 15px;border-radius:16px;border:1px solid rgba(255,255,255,.14);background:#10101b;color:#f8fafc;outline:none;box-shadow:inset 0 0 0 9999px rgba(255,255,255,.018);font:inherit}input::placeholder,textarea::placeholder{color:rgba(255,255,255,.36)}input:focus,select:focus,textarea:focus{border-color:rgba(192,132,252,.75);box-shadow:0 0 0 4px rgba(124,58,237,.18)}textarea{min-height:145px;resize:vertical;line-height:1.55}select{appearance:none;background-color:#10101b;background-image:linear-gradient(45deg,transparent 50%,#c4b5fd 50%),linear-gradient(135deg,#c4b5fd 50%,transparent 50%);background-position:calc(100% - 19px) 52%,calc(100% - 12px) 52%;background-size:7px 7px,7px 7px;background-repeat:no-repeat;padding-right:42px}select option{background:#0d0d18;color:#f8fafc}select option:hover,select option:checked{background:#7c3aed;color:#fff}.row{display:grid;grid-template-columns:1fr 1fr;gap:16px}.form-section{margin-top:17px;padding-top:17px;border-top:1px solid var(--line)}.savebar{position:sticky;bottom:14px;display:flex;justify-content:flex-end;margin-top:10px;padding:12px;border:1px solid var(--line);border-radius:22px;background:rgba(7,7,13,.8);backdrop-filter:blur(20px)}.toolbar{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}.preview-shell{border:1px solid var(--line);border-radius:24px;background:linear-gradient(145deg,rgba(0,0,0,.28),rgba(255,255,255,.035));padding:16px}.preview-message{white-space:pre-wrap;color:#f8fafc;line-height:1.55;margin-bottom:12px;padding:13px 14px;border:1px solid rgba(255,255,255,.08);border-radius:16px;background:rgba(255,255,255,.045)}.preview-box{border:1px solid var(--line);border-left:4px solid var(--purple);border-radius:18px;background:rgba(0,0,0,.24);padding:18px;margin-top:8px}.preview-title{font-weight:950;font-size:20px;letter-spacing:-.025em}.preview-desc{white-space:pre-wrap;color:rgba(255,255,255,.78);line-height:1.55;margin-top:8px}.preview-footer{color:rgba(255,255,255,.48);font-size:12px;margin-top:14px}.preview-img{max-width:100%;border-radius:16px;margin-top:14px;border:1px solid var(--line)}.preview-thumb{float:right;width:88px;height:88px;object-fit:cover;border-radius:16px;margin-left:14px;margin-bottom:10px;border:1px solid var(--line)}.tiny{font-size:12px;color:rgba(255,255,255,.48)}@media(max-width:760px){.row{grid-template-columns:1fr}.nav{position:relative;top:0;align-items:flex-start;gap:12px;flex-direction:column}.hero{padding:25px}.grid{grid-template-columns:1fr}h1{font-size:39px}}
     </style>
     """
     html_doc = f"<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>{html.escape(title)}</title>{css}</head><body><main class='wrap'><nav class='nav'><div class='brand'>moealturej bot</div><div class='navlinks'><a href='/'>Dashboard</a><a href='/health'>Health</a><a href='/logout'>Logout</a></div></nav>{body}</main></body></html>"
     return web.Response(text=html_doc, content_type="text/html")
-
 
 async def home(request: web.Request) -> web.Response:
     user = await get_dashboard_user(request)
@@ -685,44 +684,56 @@ def composer_page(guild: discord.Guild, mode: str, sent: bool = False) -> web.Re
     title = "Announcement Sender" if is_announcement else "Embed Sender"
     defaults = {
         "title": "New Announcement" if is_announcement else "Embed Title",
-        "message": "Write your announcement here..." if is_announcement else "Write your embed description here...",
+        "message": "Write your embed description here..." if not is_announcement else "Write your announcement details here...",
+        "content": "@everyone" if is_announcement else "",
         "footer": "moealturej",
         "color": "7C3AED",
     }
     body = f"""
-    <section class='hero'><span class='pill'>{'📣 Announcement' if is_announcement else '✨ Embed'} composer</span><h1>{title}</h1><p class='muted'>Build a clean Discord {'announcement' if is_announcement else 'embed'} with a live preview, then send it straight to a selected channel.</p></section>
+    <section class='hero'><span class='pill'>{'📣 Premium announcement' if is_announcement else '✨ Premium embed'} composer</span><h1>{title}</h1><p class='muted'>Create a fully custom Discord message: optional text above the embed, optional embed, thumbnail image, large image, footer, color, and a live premium preview.</p></section>
     {'<section class="card" style="margin-top:16px"><span class="pill">✅ Sent successfully</span><p class="muted">Your message was sent to Discord.</p></section>' if sent else ''}
     <div class='section-title'><h2>Compose</h2><a class='btn secondary' href='/guild/{guild.id}'>Back to settings</a></div>
     <form class='grid' method='post'>
       <section class='card'>
         <label>Send to channel<select name='channel_id' required>{channel_options(guild)}</select></label>
-        <label>Title<input id='titleInput' name='title' maxlength='256' value='{html.escape(defaults['title'])}'></label>
-        <label>Message<textarea id='messageInput' name='message' required>{html.escape(defaults['message'])}</textarea></label>
+        <div class='form-section'><h2>Message outside embed</h2><p class='muted'>This appears above the embed. Use it for pings, short notes, links, or send a plain message only.</p></div>
+        <label>Top message / content<textarea id='contentInput' name='content' placeholder='Optional text shown above the embed'>{html.escape(defaults['content'])}</textarea></label>
+        <div class='form-section'><h2>Embed builder</h2><label style='display:flex;align-items:center;gap:10px'><input id='embedEnabled' name='embed_enabled' type='checkbox' checked style='width:auto;margin:0'> Include embed</label></div>
+        <label>Embed title<input id='titleInput' name='title' maxlength='256' value='{html.escape(defaults['title'])}'></label>
+        <label>Embed description<textarea id='messageInput' name='message'>{html.escape(defaults['message'])}</textarea></label>
         <div class='row'><label>Color hex<input id='colorInput' name='color' value='{defaults['color']}' placeholder='7C3AED'></label><label>Footer<input id='footerInput' name='footer' value='{html.escape(defaults['footer'])}'></label></div>
-        <label>Image URL optional<input id='imageInput' name='image_url' placeholder='https://...'></label>
+        <div class='row'><label>Thumbnail image URL<input id='thumbInput' name='thumbnail_url' placeholder='Small top-right embed image URL'></label><label>Large image URL<input id='imageInput' name='image_url' placeholder='Large image under embed text URL'></label></div>
+        <p class='tiny'>Discord supports one embed thumbnail and one large embed image. The top message is separate from the embed.</p>
         <div class='toolbar'><button type='submit'>{'Send announcement' if is_announcement else 'Send embed'}</button><a class='btn secondary' href='/guild/{guild.id}'>Cancel</a></div>
       </section>
       <section class='card'>
         <h2>Live Preview</h2>
-        <p class='muted'>This is a close dashboard preview of what Discord will receive.</p>
-        <div class='preview-box' id='previewBox'>
-          <div class='preview-title' id='previewTitle'></div>
-          <div class='preview-desc' id='previewDesc'></div>
-          <img class='preview-img' id='previewImg' style='display:none'>
-          <div class='preview-footer' id='previewFooter'></div>
+        <p class='muted'>Preview includes the outside message, embed thumbnail, and large image.</p>
+        <div class='preview-shell'>
+          <div class='preview-message' id='contentPreview'></div>
+          <div class='preview-box' id='previewBox'>
+            <img class='preview-thumb' id='previewThumb' style='display:none'>
+            <div class='preview-title' id='previewTitle'></div>
+            <div class='preview-desc' id='previewDesc'></div>
+            <img class='preview-img' id='previewImg' style='display:none'>
+            <div class='preview-footer' id='previewFooter'></div>
+          </div>
         </div>
       </section>
     </form>
     <script>
-    const titleInput=document.getElementById('titleInput'), messageInput=document.getElementById('messageInput'), colorInput=document.getElementById('colorInput'), footerInput=document.getElementById('footerInput'), imageInput=document.getElementById('imageInput');
-    const box=document.getElementById('previewBox'), pTitle=document.getElementById('previewTitle'), pDesc=document.getElementById('previewDesc'), pFooter=document.getElementById('previewFooter'), pImg=document.getElementById('previewImg');
+    const contentInput=document.getElementById('contentInput'), embedEnabled=document.getElementById('embedEnabled'), titleInput=document.getElementById('titleInput'), messageInput=document.getElementById('messageInput'), colorInput=document.getElementById('colorInput'), footerInput=document.getElementById('footerInput'), imageInput=document.getElementById('imageInput'), thumbInput=document.getElementById('thumbInput');
+    const contentPreview=document.getElementById('contentPreview'), box=document.getElementById('previewBox'), pTitle=document.getElementById('previewTitle'), pDesc=document.getElementById('previewDesc'), pFooter=document.getElementById('previewFooter'), pImg=document.getElementById('previewImg'), pThumb=document.getElementById('previewThumb');
     function cleanHex(v){{v=(v||'7C3AED').replace('#','').trim(); return /^[0-9a-fA-F]{{6}}$/.test(v)?v:'7C3AED'}}
-    function updatePreview(){{pTitle.textContent=titleInput.value||'Untitled'; pDesc.textContent=messageInput.value||''; pFooter.textContent=footerInput.value||''; box.style.borderLeftColor='#'+cleanHex(colorInput.value); const img=imageInput.value.trim(); if(img){{pImg.src=img; pImg.style.display='block'}}else{{pImg.style.display='none'}}}}
-    [titleInput,messageInput,colorInput,footerInput,imageInput].forEach(el=>el.addEventListener('input',updatePreview)); updatePreview();
+    function setImg(el,url){{url=(url||'').trim(); if(url){{el.src=url; el.style.display='block'}}else{{el.style.display='none'}}}}
+    function updatePreview(){{
+      const top=(contentInput.value||'').trim(); contentPreview.textContent=top||'No outside message. Only the embed will be sent.'; contentPreview.style.display=top||!embedEnabled.checked?'block':'none';
+      box.style.display=embedEnabled.checked?'block':'none'; pTitle.textContent=titleInput.value||'Untitled'; pDesc.textContent=messageInput.value||''; pFooter.textContent=footerInput.value||''; box.style.borderLeftColor='#'+cleanHex(colorInput.value); setImg(pImg,imageInput.value); setImg(pThumb,thumbInput.value);
+    }}
+    [contentInput,embedEnabled,titleInput,messageInput,colorInput,footerInput,imageInput,thumbInput].forEach(el=>el.addEventListener('input',updatePreview)); embedEnabled.addEventListener('change',updatePreview); updatePreview();
     </script>
     """
     return page(title, body)
-
 
 async def announcement_page(request: web.Request) -> web.Response:
     user = await get_dashboard_user(request)
@@ -759,20 +770,32 @@ async def send_composer(request: web.Request, mode: str) -> web.Response:
     channel = guild.get_channel(channel_id)
     if not isinstance(channel, discord.TextChannel):
         return page("Invalid channel", "<section class='card'><h1>Invalid channel</h1><p class='muted'>Choose a text channel the bot can send messages in.</p></section>")
-    title = str(data.get("title") or ("Announcement" if mode == "announcement" else "Embed"))[:256]
-    message = str(data.get("message") or "").strip()[:4000]
-    footer = str(data.get("footer") or "moealturej")[:2048]
-    image_url = str(data.get("image_url") or "").strip()
-    color = parse_embed_color(str(data.get("color") or ""))
-    embed = make_embed(title, message, color)
-    if image_url:
-        embed.set_image(url=image_url)
-    if footer:
-        embed.set_footer(text=footer)
-    await channel.send(embed=embed)
-    await save_event("dashboard_events", {"guild_id": guild.id, "user_id": int(user["user_id"]), "event": f"send_{mode}", "channel_id": channel.id, "title": title})
-    raise web.HTTPFound(f"/guild/{guild.id}/{'announcements' if mode == 'announcement' else 'embeds'}?sent=1")
 
+    content = str(data.get("content") or "").strip()[:1900]
+    embed_enabled = data.get("embed_enabled") == "on"
+    embed = None
+    title = str(data.get("title") or ("Announcement" if mode == "announcement" else "Embed"))[:256]
+
+    if embed_enabled:
+        message = str(data.get("message") or "").strip()[:4000]
+        footer = str(data.get("footer") or "moealturej")[:2048]
+        image_url = str(data.get("image_url") or "").strip()
+        thumbnail_url = str(data.get("thumbnail_url") or "").strip()
+        color = parse_embed_color(str(data.get("color") or ""))
+        embed = make_embed(title, message or " ", color)
+        if thumbnail_url:
+            embed.set_thumbnail(url=thumbnail_url)
+        if image_url:
+            embed.set_image(url=image_url)
+        if footer:
+            embed.set_footer(text=footer)
+
+    if not content and not embed:
+        return page("Nothing to send", "<section class='card'><h1>Nothing to send</h1><p class='muted'>Add a top message, enable the embed, or both.</p></section>")
+
+    await channel.send(content=content or None, embed=embed, allowed_mentions=discord.AllowedMentions.all() if mode == "announcement" else discord.AllowedMentions.none())
+    await save_event("dashboard_events", {"guild_id": guild.id, "user_id": int(user["user_id"]), "event": f"send_{mode}", "channel_id": channel.id, "title": title, "has_content": bool(content), "has_embed": bool(embed)})
+    raise web.HTTPFound(f"/guild/{guild.id}/{'announcements' if mode == 'announcement' else 'embeds'}?sent=1")
 
 async def announcement_send(request: web.Request) -> web.Response:
     return await send_composer(request, "announcement")
@@ -807,7 +830,7 @@ async def dm_page(request: web.Request) -> web.Response:
     failed = request.query.get("failed") == "1"
     reason = request.query.get("reason", "")[:180]
     body = f"""
-    <section class='hero'><span class='pill'>💌 Private DM composer</span><h1>User DM Sender</h1><p class='muted'>Send a fully custom DM from the dashboard. Use a plain message, an embed, or both. The preview updates before you send.</p></section>
+    <section class='hero'><span class='pill'>💌 Premium DM composer</span><h1>User DM Sender</h1><p class='muted'>Send fully custom private DMs with text above the embed, optional embed, thumbnail image, large image, footer, color, and a live Discord-style preview.</p></section>
     {'<section class="card" style="margin-top:16px"><span class="pill">✅ DM sent</span><p class="muted">The private message was delivered successfully.</p></section>' if sent else ''}
     {'<section class="card" style="margin-top:16px"><span class="pill" style="background:rgba(251,113,133,.12);border-color:rgba(251,113,133,.28);color:#fecdd3">⚠️ DM failed</span><p class="muted">' + html.escape(reason or 'The bot could not DM that user. They may have DMs disabled or the ID was invalid.') + '</p></section>' if failed else ''}
     <div class='section-title'><h2>Compose private message</h2><a class='btn secondary' href='/guild/{guild.id}'>Back to settings</a></div>
@@ -815,42 +838,46 @@ async def dm_page(request: web.Request) -> web.Response:
       <section class='card'>
         <label>Choose cached member<select id='memberSelect'>{member_select_options(guild)}</select></label>
         <label>Discord user ID<input id='userIdInput' name='user_id' inputmode='numeric' pattern='[0-9]{{15,25}}' placeholder='1222903158125105194' required></label>
-        <label>Plain DM message<textarea id='plainInput' name='plain_message' placeholder='This text appears above the embed. You can leave it empty if using only an embed.'></textarea></label>
-        <div class='form-section'><h2>Optional embed</h2><p class='muted'>Turn this on for a polished Discord embed inside the DM.</p><label style='display:flex;align-items:center;gap:10px'><input id='embedEnabled' name='embed_enabled' type='checkbox' checked style='width:auto;margin:0'> Include embed</label></div>
+        <div class='form-section'><h2>Message outside embed</h2><p class='muted'>This appears as normal DM text above the embed. You can send only this, only an embed, or both.</p></div>
+        <label>Top DM message<textarea id='plainInput' name='plain_message' placeholder='Custom text shown above the embed'></textarea></label>
+        <div class='form-section'><h2>Optional embed</h2><label style='display:flex;align-items:center;gap:10px'><input id='embedEnabled' name='embed_enabled' type='checkbox' checked style='width:auto;margin:0'> Include embed</label></div>
         <label>Embed title<input id='titleInput' name='title' maxlength='256' value='Message from moealturej'></label>
         <label>Embed description<textarea id='messageInput' name='message'>Write your custom DM embed here...</textarea></label>
         <div class='row'><label>Color hex<input id='colorInput' name='color' value='7C3AED' placeholder='7C3AED'></label><label>Footer<input id='footerInput' name='footer' value='moealturej'></label></div>
-        <label>Image URL optional<input id='imageInput' name='image_url' placeholder='https://...'></label>
+        <div class='row'><label>Thumbnail image URL<input id='thumbInput' name='thumbnail_url' placeholder='Small top-right embed image URL'></label><label>Large image URL<input id='imageInput' name='image_url' placeholder='Large image under embed text URL'></label></div>
+        <p class='tiny'>Use thumbnail for a small logo/profile image and large image for banners or previews.</p>
         <div class='toolbar'><button type='submit'>Send private DM</button><a class='btn secondary' href='/guild/{guild.id}'>Cancel</a></div>
       </section>
       <section class='card'>
         <h2>Live Preview</h2>
         <p class='muted'>This is a close preview of the DM the user will receive.</p>
-        <div class='preview-box' id='dmPlainBox' style='border-left-color:#38bdf8;margin-bottom:12px'><div class='preview-desc' id='plainPreview'></div></div>
-        <div class='preview-box' id='previewBox'>
-          <div class='preview-title' id='previewTitle'></div>
-          <div class='preview-desc' id='previewDesc'></div>
-          <img class='preview-img' id='previewImg' style='display:none'>
-          <div class='preview-footer' id='previewFooter'></div>
+        <div class='preview-shell'>
+          <div class='preview-message' id='plainPreview'></div>
+          <div class='preview-box' id='previewBox'>
+            <img class='preview-thumb' id='previewThumb' style='display:none'>
+            <div class='preview-title' id='previewTitle'></div>
+            <div class='preview-desc' id='previewDesc'></div>
+            <img class='preview-img' id='previewImg' style='display:none'>
+            <div class='preview-footer' id='previewFooter'></div>
+          </div>
         </div>
       </section>
     </form>
     <script>
     const memberSelect=document.getElementById('memberSelect'), userIdInput=document.getElementById('userIdInput'), plainInput=document.getElementById('plainInput'), embedEnabled=document.getElementById('embedEnabled');
-    const titleInput=document.getElementById('titleInput'), messageInput=document.getElementById('messageInput'), colorInput=document.getElementById('colorInput'), footerInput=document.getElementById('footerInput'), imageInput=document.getElementById('imageInput');
-    const box=document.getElementById('previewBox'), pTitle=document.getElementById('previewTitle'), pDesc=document.getElementById('previewDesc'), pFooter=document.getElementById('previewFooter'), pImg=document.getElementById('previewImg'), plainBox=document.getElementById('dmPlainBox'), plainPreview=document.getElementById('plainPreview');
+    const titleInput=document.getElementById('titleInput'), messageInput=document.getElementById('messageInput'), colorInput=document.getElementById('colorInput'), footerInput=document.getElementById('footerInput'), imageInput=document.getElementById('imageInput'), thumbInput=document.getElementById('thumbInput');
+    const box=document.getElementById('previewBox'), pTitle=document.getElementById('previewTitle'), pDesc=document.getElementById('previewDesc'), pFooter=document.getElementById('previewFooter'), pImg=document.getElementById('previewImg'), pThumb=document.getElementById('previewThumb'), plainPreview=document.getElementById('plainPreview');
     memberSelect.addEventListener('change',()=>{{if(memberSelect.value) userIdInput.value=memberSelect.value;}});
     function cleanHex(v){{v=(v||'7C3AED').replace('#','').trim(); return /^[0-9a-fA-F]{{6}}$/.test(v)?v:'7C3AED'}}
+    function setImg(el,url){{url=(url||'').trim(); if(url){{el.src=url; el.style.display='block'}}else{{el.style.display='none'}}}}
     function updatePreview(){{
-      const plain=plainInput.value.trim(); plainPreview.textContent=plain||'No plain message. Only the embed will be sent.'; plainBox.style.display=plain||!embedEnabled.checked?'block':'none';
-      box.style.display=embedEnabled.checked?'block':'none'; pTitle.textContent=titleInput.value||'Untitled'; pDesc.textContent=messageInput.value||''; pFooter.textContent=footerInput.value||''; box.style.borderLeftColor='#'+cleanHex(colorInput.value);
-      const img=imageInput.value.trim(); if(img){{pImg.src=img; pImg.style.display='block'}}else{{pImg.style.display='none'}}
+      const plain=(plainInput.value||'').trim(); plainPreview.textContent=plain||'No outside DM message. Only the embed will be sent.'; plainPreview.style.display=plain||!embedEnabled.checked?'block':'none';
+      box.style.display=embedEnabled.checked?'block':'none'; pTitle.textContent=titleInput.value||'Untitled'; pDesc.textContent=messageInput.value||''; pFooter.textContent=footerInput.value||''; box.style.borderLeftColor='#'+cleanHex(colorInput.value); setImg(pImg,imageInput.value); setImg(pThumb,thumbInput.value);
     }}
-    [plainInput,embedEnabled,titleInput,messageInput,colorInput,footerInput,imageInput].forEach(el=>el.addEventListener('input',updatePreview)); embedEnabled.addEventListener('change',updatePreview); updatePreview();
+    [plainInput,embedEnabled,titleInput,messageInput,colorInput,footerInput,imageInput,thumbInput].forEach(el=>el.addEventListener('input',updatePreview)); embedEnabled.addEventListener('change',updatePreview); updatePreview();
     </script>
     """
     return page("DM Sender", body)
-
 
 async def dm_send(request: web.Request) -> web.Response:
     user = await get_dashboard_user(request)
@@ -873,8 +900,11 @@ async def dm_send(request: web.Request) -> web.Response:
         message = str(data.get("message") or "").strip()[:4000]
         footer = str(data.get("footer") or "moealturej")[:2048]
         image_url = str(data.get("image_url") or "").strip()
+        thumbnail_url = str(data.get("thumbnail_url") or "").strip()
         color = parse_embed_color(str(data.get("color") or ""))
         embed = make_embed(title, message or " ", color)
+        if thumbnail_url:
+            embed.set_thumbnail(url=thumbnail_url)
         if image_url:
             embed.set_image(url=image_url)
         if footer:
@@ -899,7 +929,6 @@ async def dm_send(request: web.Request) -> web.Response:
 
     await save_event("dashboard_events", {"guild_id": guild.id, "user_id": int(user["user_id"]), "event": "send_dm", "target_user_id": target_id, "has_plain": bool(plain_message), "has_embed": bool(embed)})
     raise web.HTTPFound(f"/guild/{guild.id}/dms?sent=1")
-
 
 async def verify_start(request: web.Request) -> web.Response:
     guild_id = int(request.query.get("guild_id", "0"))
