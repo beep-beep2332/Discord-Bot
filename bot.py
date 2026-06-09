@@ -627,6 +627,7 @@ async def guild_page(request: web.Request) -> web.Response:
     <div class='grid'>
       <section class='card'><h2>📣 Announcement sender</h2><p class='muted'>Create a polished announcement embed with live preview and send it to any text channel.</p><a class='btn' href='/guild/{guild_id}/announcements'>Open announcement sender</a></section>
       <section class='card'><h2>✨ Embed sender</h2><p class='muted'>Build a custom embed with title, message, color, image, footer, and preview before sending.</p><a class='btn' href='/guild/{guild_id}/embeds'>Open embed sender</a></section>
+      <section class='card'><h2>💌 User DM sender</h2><p class='muted'>Send fully custom private DMs with optional embeds, images, buttons-style links in text, and a live Discord-style preview.</p><a class='btn' href='/guild/{guild_id}/dms'>Open DM sender</a></section>
     </div>
     <div class='section-title'><h2>Setup links</h2></div><section class='card'><p class='muted'>OAuth verification URL:</p><code>{PUBLIC_BASE_URL}/verify/start?guild_id={guild_id}</code></section>
     """
@@ -781,6 +782,125 @@ async def embed_send(request: web.Request) -> web.Response:
     return await send_composer(request, "embed")
 
 
+def member_select_options(guild: discord.Guild) -> str:
+    """Build a manageable cached-member selector for the dashboard DM tool."""
+    members = sorted(
+        [m for m in guild.members if not m.bot],
+        key=lambda m: (m.display_name or m.name).lower(),
+    )[:500]
+    out = ["<option value=''>Type/paste a Discord user ID or choose a cached member</option>"]
+    for member in members:
+        label = f"{member.display_name} (@{member.name}) — {member.id}"
+        out.append(f"<option value='{member.id}'>{html.escape(label)}</option>")
+    return "".join(out)
+
+
+async def dm_page(request: web.Request) -> web.Response:
+    user = await get_dashboard_user(request)
+    guild_id = int(request.match_info["guild_id"])
+    if not user or not await dashboard_can_access(user, guild_id):
+        raise web.HTTPForbidden(text=owner_private_message())
+    guild = bot.get_guild(guild_id)
+    if not guild:
+        return page("Missing server", "<section class='card'><h1>Bot is not in this server</h1></section>")
+    sent = request.query.get("sent") == "1"
+    failed = request.query.get("failed") == "1"
+    reason = request.query.get("reason", "")[:180]
+    body = f"""
+    <section class='hero'><span class='pill'>💌 Private DM composer</span><h1>User DM Sender</h1><p class='muted'>Send a fully custom DM from the dashboard. Use a plain message, an embed, or both. The preview updates before you send.</p></section>
+    {'<section class="card" style="margin-top:16px"><span class="pill">✅ DM sent</span><p class="muted">The private message was delivered successfully.</p></section>' if sent else ''}
+    {'<section class="card" style="margin-top:16px"><span class="pill" style="background:rgba(251,113,133,.12);border-color:rgba(251,113,133,.28);color:#fecdd3">⚠️ DM failed</span><p class="muted">' + html.escape(reason or 'The bot could not DM that user. They may have DMs disabled or the ID was invalid.') + '</p></section>' if failed else ''}
+    <div class='section-title'><h2>Compose private message</h2><a class='btn secondary' href='/guild/{guild.id}'>Back to settings</a></div>
+    <form class='grid' method='post'>
+      <section class='card'>
+        <label>Choose cached member<select id='memberSelect'>{member_select_options(guild)}</select></label>
+        <label>Discord user ID<input id='userIdInput' name='user_id' inputmode='numeric' pattern='[0-9]{{15,25}}' placeholder='1222903158125105194' required></label>
+        <label>Plain DM message<textarea id='plainInput' name='plain_message' placeholder='This text appears above the embed. You can leave it empty if using only an embed.'></textarea></label>
+        <div class='form-section'><h2>Optional embed</h2><p class='muted'>Turn this on for a polished Discord embed inside the DM.</p><label style='display:flex;align-items:center;gap:10px'><input id='embedEnabled' name='embed_enabled' type='checkbox' checked style='width:auto;margin:0'> Include embed</label></div>
+        <label>Embed title<input id='titleInput' name='title' maxlength='256' value='Message from moealturej'></label>
+        <label>Embed description<textarea id='messageInput' name='message'>Write your custom DM embed here...</textarea></label>
+        <div class='row'><label>Color hex<input id='colorInput' name='color' value='7C3AED' placeholder='7C3AED'></label><label>Footer<input id='footerInput' name='footer' value='moealturej'></label></div>
+        <label>Image URL optional<input id='imageInput' name='image_url' placeholder='https://...'></label>
+        <div class='toolbar'><button type='submit'>Send private DM</button><a class='btn secondary' href='/guild/{guild.id}'>Cancel</a></div>
+      </section>
+      <section class='card'>
+        <h2>Live Preview</h2>
+        <p class='muted'>This is a close preview of the DM the user will receive.</p>
+        <div class='preview-box' id='dmPlainBox' style='border-left-color:#38bdf8;margin-bottom:12px'><div class='preview-desc' id='plainPreview'></div></div>
+        <div class='preview-box' id='previewBox'>
+          <div class='preview-title' id='previewTitle'></div>
+          <div class='preview-desc' id='previewDesc'></div>
+          <img class='preview-img' id='previewImg' style='display:none'>
+          <div class='preview-footer' id='previewFooter'></div>
+        </div>
+      </section>
+    </form>
+    <script>
+    const memberSelect=document.getElementById('memberSelect'), userIdInput=document.getElementById('userIdInput'), plainInput=document.getElementById('plainInput'), embedEnabled=document.getElementById('embedEnabled');
+    const titleInput=document.getElementById('titleInput'), messageInput=document.getElementById('messageInput'), colorInput=document.getElementById('colorInput'), footerInput=document.getElementById('footerInput'), imageInput=document.getElementById('imageInput');
+    const box=document.getElementById('previewBox'), pTitle=document.getElementById('previewTitle'), pDesc=document.getElementById('previewDesc'), pFooter=document.getElementById('previewFooter'), pImg=document.getElementById('previewImg'), plainBox=document.getElementById('dmPlainBox'), plainPreview=document.getElementById('plainPreview');
+    memberSelect.addEventListener('change',()=>{{if(memberSelect.value) userIdInput.value=memberSelect.value;}});
+    function cleanHex(v){{v=(v||'7C3AED').replace('#','').trim(); return /^[0-9a-fA-F]{{6}}$/.test(v)?v:'7C3AED'}}
+    function updatePreview(){{
+      const plain=plainInput.value.trim(); plainPreview.textContent=plain||'No plain message. Only the embed will be sent.'; plainBox.style.display=plain||!embedEnabled.checked?'block':'none';
+      box.style.display=embedEnabled.checked?'block':'none'; pTitle.textContent=titleInput.value||'Untitled'; pDesc.textContent=messageInput.value||''; pFooter.textContent=footerInput.value||''; box.style.borderLeftColor='#'+cleanHex(colorInput.value);
+      const img=imageInput.value.trim(); if(img){{pImg.src=img; pImg.style.display='block'}}else{{pImg.style.display='none'}}
+    }}
+    [plainInput,embedEnabled,titleInput,messageInput,colorInput,footerInput,imageInput].forEach(el=>el.addEventListener('input',updatePreview)); embedEnabled.addEventListener('change',updatePreview); updatePreview();
+    </script>
+    """
+    return page("DM Sender", body)
+
+
+async def dm_send(request: web.Request) -> web.Response:
+    user = await get_dashboard_user(request)
+    guild_id = int(request.match_info["guild_id"])
+    if not user or not await dashboard_can_access(user, guild_id):
+        raise web.HTTPForbidden(text=owner_private_message())
+    guild = bot.get_guild(guild_id)
+    if not guild:
+        return page("Missing server", "<section class='card'><h1>Bot is not in this server</h1></section>")
+    data = await request.post()
+    raw_user_id = str(data.get("user_id", "")).strip()
+    if not raw_user_id.isdigit():
+        raise web.HTTPFound(f"/guild/{guild.id}/dms?failed=1&reason=Invalid+Discord+user+ID")
+    target_id = int(raw_user_id)
+    plain_message = str(data.get("plain_message") or "").strip()[:1900]
+    embed_enabled = data.get("embed_enabled") == "on"
+    embed = None
+    if embed_enabled:
+        title = str(data.get("title") or "Message from moealturej")[:256]
+        message = str(data.get("message") or "").strip()[:4000]
+        footer = str(data.get("footer") or "moealturej")[:2048]
+        image_url = str(data.get("image_url") or "").strip()
+        color = parse_embed_color(str(data.get("color") or ""))
+        embed = make_embed(title, message or " ", color)
+        if image_url:
+            embed.set_image(url=image_url)
+        if footer:
+            embed.set_footer(text=footer)
+    if not plain_message and not embed:
+        raise web.HTTPFound(f"/guild/{guild.id}/dms?failed=1&reason=Write+a+plain+message+or+enable+an+embed+first")
+
+    try:
+        target = guild.get_member(target_id)
+        if target is None:
+            try:
+                target = await guild.fetch_member(target_id)
+            except discord.NotFound:
+                target = await bot.fetch_user(target_id)
+        await target.send(content=plain_message or None, embed=embed, allowed_mentions=discord.AllowedMentions.none())
+    except discord.Forbidden:
+        await save_event("dashboard_events", {"guild_id": guild.id, "user_id": int(user["user_id"]), "event": "send_dm_failed", "target_user_id": target_id, "reason": "forbidden"})
+        raise web.HTTPFound(f"/guild/{guild.id}/dms?failed=1&reason=That+user+has+DMs+disabled+or+blocked+bot+DMs")
+    except discord.HTTPException as exc:
+        await save_event("dashboard_events", {"guild_id": guild.id, "user_id": int(user["user_id"]), "event": "send_dm_failed", "target_user_id": target_id, "reason": str(exc)[:300]})
+        raise web.HTTPFound(f"/guild/{guild.id}/dms?failed=1&reason=Discord+rejected+the+DM+request")
+
+    await save_event("dashboard_events", {"guild_id": guild.id, "user_id": int(user["user_id"]), "event": "send_dm", "target_user_id": target_id, "has_plain": bool(plain_message), "has_embed": bool(embed)})
+    raise web.HTTPFound(f"/guild/{guild.id}/dms?sent=1")
+
+
 async def verify_start(request: web.Request) -> web.Response:
     guild_id = int(request.query.get("guild_id", "0"))
     requested_user_id = int(request.query.get("user_id", "0") or 0)
@@ -873,6 +993,8 @@ async def start_web() -> None:
     app.router.add_post("/guild/{guild_id}/announcements", announcement_send)
     app.router.add_get("/guild/{guild_id}/embeds", embed_page)
     app.router.add_post("/guild/{guild_id}/embeds", embed_send)
+    app.router.add_get("/guild/{guild_id}/dms", dm_page)
+    app.router.add_post("/guild/{guild_id}/dms", dm_send)
     app.router.add_get("/verify/start", verify_start)
     app.router.add_get("/verify/callback", verify_callback)
     app.router.add_get("/health", health)
